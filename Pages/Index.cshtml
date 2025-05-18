@@ -1,0 +1,402 @@
+﻿@page
+@model IndexModel
+@{
+    ViewData["Title"] = "Pixel Wall-E";
+    var pixelDataJson = TempData["PixelData"] as string ?? "[]";
+}
+
+<div class="container-fluid p-4">
+    <div class="row g-4">
+        <div class="col-lg-7">
+            <div class="card mb-4">
+                <div class="card-header bg-dark text-white">
+                    <h3>Editor de Código</h3>
+                </div>
+                <div class="card-body p-0">
+                    <div id="code-editor-container">
+                        <div id="line-numbers"></div>
+                        <textarea id="code-editor" class="form-control" rows="20">@Model.Code</textarea>
+                    </div>
+                </div>
+                <div class="card-footer">
+                    <div class="row">
+                        <div class="col">
+                            <form method="post" id="direct-form">
+                                <input type="hidden" name="code" id="code-hidden" value="@Model.Code" />
+                                <input type="hidden" name="canvasSize" id="canvas-size-hidden"
+                                    value="@Model.CanvasSize" />
+                                <button type="submit" class="btn btn-primary">Ejecutar (Directo)</button>
+                            </form>
+                        </div>
+                        <div class="col">
+                            <button id="execute-ajax-btn" class="btn btn-success">Ejecutar (AJAX)</button>
+                            <button id="load-btn" class="btn btn-secondary">Cargar</button>
+                            <button id="save-btn" class="btn btn-secondary">Guardar</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header bg-secondary text-white">
+                    <h3>Consola</h3>
+                </div>
+                <div class="card-body">
+                    <pre id="console" class="console p-3 bg-dark text-light">@Model.ConsoleOutput</pre>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-5">
+            <div class="card">
+                <div class="card-header bg-info text-white d-flex justify-content-between align-items-center">
+                    <h3>Canvas</h3>
+                    <div class="input-group" style="width: 200px;">
+                        <input type="number" id="canvas-size" class="form-control" value="@Model.CanvasSize" min="10"
+                            max="500" />
+                        <button id="resize-btn" class="btn btn-light">Redimensionar</button>
+                    </div>
+                </div>
+                <div class="card-body p-0">
+                    <div id="canvas-container" class="p-3 text-center">
+                        <canvas id="pixel-canvas" width="@Model.CanvasSize" height="@Model.CanvasSize"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<input type="file" id="file-input" style="display: none;" accept=".pw" />
+
+@section Scripts {
+    <script>
+        // Datos iniciales si se muestran desde una publicación de formulario
+        const initialPixelData = @Html.Raw(pixelDataJson);
+        const canvasSize = @Model.CanvasSize;
+
+        // Al cargar la página
+        document.addEventListener('DOMContentLoaded', function () {
+            // Inicializar el canvas
+            initCanvas(canvasSize);
+
+            // Si hay datos iniciales de píxeles, mostrarlos
+            if (initialPixelData && initialPixelData.length > 0) {
+                console.log('Datos iniciales:', initialPixelData);
+                updateCanvasFixed(initialPixelData, canvasSize);
+            }
+
+            // Actualizar los números de línea
+            updateLineNumbers();
+
+            // Configurar el editor
+            const editor = document.getElementById('code-editor');
+            editor.addEventListener('input', function () {
+                updateLineNumbers();
+                document.getElementById('code-hidden').value = this.value;
+            });
+
+            // Manejar el tabulador
+            editor.addEventListener('keydown', function (e) {
+                if (e.key === 'Tab') {
+                    e.preventDefault();
+                    const start = this.selectionStart;
+                    const end = this.selectionEnd;
+
+                    this.value = this.value.substring(0, start) + '    ' + this.value.substring(end);
+                    this.selectionStart = this.selectionEnd = start + 4;
+                    updateLineNumbers();
+                }
+            });
+
+            // Configurar el tamaño del canvas
+            const canvasSizeInput = document.getElementById('canvas-size');
+            canvasSizeInput.addEventListener('change', function () {
+                document.getElementById('canvas-size-hidden').value = this.value;
+            });
+
+            // Configurar el botón AJAX
+            document.getElementById('execute-ajax-btn').addEventListener('click', executeAjaxFixed);
+
+            // Configurar el botón de redimensionamiento
+            document.getElementById('resize-btn').addEventListener('click', resizeCanvasFixed);
+
+            // Configurar los botones de carga y guardado
+            document.getElementById('load-btn').addEventListener('click', loadFile);
+            document.getElementById('save-btn').addEventListener('click', saveFile);
+        });
+
+        // Función para actualizar los números de línea
+        function updateLineNumbers() {
+            const editor = document.getElementById('code-editor');
+            const lineNumbers = document.getElementById('line-numbers');
+            const lines = editor.value.split('\n');
+
+            // Crear contenido HTML para números de línea
+            let html = '';
+            for (let i = 0; i < lines.length; i++) {
+                html += `<div class="line-number">${i + 1}</div>`;
+            }
+            lineNumbers.innerHTML = html;
+
+            // Sincronizar scroll
+            lineNumbers.scrollTop = editor.scrollTop;
+        }
+
+        // Agregar un manejador de scroll para mantener sincronizados los números de línea
+        document.getElementById('code-editor').addEventListener('scroll', function () {
+            document.getElementById('line-numbers').scrollTop = this.scrollTop;
+        });
+
+        // Función para inicializar el canvas - CORREGIDA
+        function initCanvas(size) {
+            const canvas = document.getElementById('pixel-canvas');
+            const ctx = canvas.getContext('2d');
+
+            // Asegurarse de que el tamaño sea correcto
+            canvas.width = size;
+            canvas.height = size;
+
+            // Limpiar y dibujar fondo blanco
+            ctx.fillStyle = 'white';
+            ctx.fillRect(0, 0, size, size);
+
+            // Dibujar cuadrícula
+            ctx.strokeStyle = '#eee';
+            ctx.lineWidth = 0.5;
+
+            // Líneas horizontales
+            for (let i = 0; i <= size; i += 10) {
+                ctx.beginPath();
+                ctx.moveTo(0, i);
+                ctx.lineTo(size, i);
+                ctx.stroke();
+            }
+
+            // Líneas verticales
+            for (let i = 0; i <= size; i += 10) {
+                ctx.beginPath();
+                ctx.moveTo(i, 0);
+                ctx.lineTo(i, size);
+                ctx.stroke();
+            }
+        }
+
+        // Función para actualizar el canvas con píxeles - CORREGIDA
+        function updateCanvasFixed(pixelData, size) {
+            // Primero inicializar el canvas
+            initCanvas(size);
+
+            const canvas = document.getElementById('pixel-canvas');
+            const ctx = canvas.getContext('2d');
+
+            console.log(`Actualizando canvas con ${pixelData.length} píxeles`);
+
+            // Agrupar píxeles por color para optimizar
+            const colorGroups = {};
+
+            for (const pixel of pixelData) {
+                if (!colorGroups[pixel.color]) {
+                    colorGroups[pixel.color] = [];
+                }
+                colorGroups[pixel.color].push({ x: pixel.x, y: pixel.y });
+            }
+
+            // Dibujar píxeles por grupos de color
+            for (const color in colorGroups) {
+                ctx.fillStyle = getColorValue(color);
+                for (const pixel of colorGroups[color]) {
+                    ctx.fillRect(pixel.x, pixel.y, 1, 1);
+                }
+            }
+        }
+
+        // Función para obtener el valor CSS del color
+        function getColorValue(colorName) {
+            const colorMap = {
+                'Red': '#dc3545',
+                'Blue': '#007bff',
+                'Green': '#28a745',
+                'Yellow': '#ffc107',
+                'Orange': '#fd7e14',
+                'Purple': '#6f42c1',
+                'Black': '#000000',
+                'White': '#ffffff',
+                'Transparent': 'rgba(0, 0, 0, 0)'
+            };
+
+            return colorMap[colorName] || colorName;
+        }
+
+        // Función para ejecutar con AJAX - CORREGIDA
+        function executeAjaxFixed() {
+            const code = document.getElementById('code-editor').value;
+            const canvasSize = parseInt(document.getElementById('canvas-size').value);
+            const consoleOutput = document.getElementById('console');
+
+            // Limpiar la consola
+            consoleOutput.innerHTML = 'Ejecutando...';
+
+            console.log('Enviando código:', code);
+            console.log('Tamaño del canvas:', canvasSize);
+
+            // Usar una URL codificada correctamente
+            const url = `/Index?handler=ExecuteAjax&code=${encodeURIComponent(code)}&canvasSize=${canvasSize}`;
+            console.log('URL de solicitud:', url);
+
+            fetch(url)
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`Error HTTP: ${response.status} - ${response.statusText}`);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    console.log('Respuesta del servidor:', data);
+
+                    if (data.success) {
+                        console.log(`Recibidos ${data.pixelData.length} píxeles`);
+
+                        if (data.pixelData.length > 0) {
+                            console.log('Primer píxel:', data.pixelData[0]);
+                        }
+
+                        updateCanvasFixed(data.pixelData, canvasSize);
+                        consoleOutput.innerHTML = data.consoleOutput || 'Ejecución completada con éxito.';
+                    } else {
+                        consoleOutput.innerHTML = 'Error: ' + data.error;
+                    }
+                })
+                .catch(error => {
+                    consoleOutput.innerHTML = 'Error: ' + error.message;
+                    console.error("Error en la solicitud:", error);
+                });
+        }
+
+        // Función para redimensionar el canvas - CORREGIDA
+        function resizeCanvasFixed() {
+            const size = parseInt(document.getElementById('canvas-size').value);
+            if (size < 10 || size > 500) {
+                alert('El tamaño debe estar entre 10 y 500 píxeles.');
+                return;
+            }
+
+            document.getElementById('canvas-size-hidden').value = size;
+            initCanvas(size);
+
+            const consoleOutput = document.getElementById('console');
+            consoleOutput.innerHTML += `\nCanvas redimensionado a ${size}x${size} píxeles.`;
+        }
+
+        // Funciones para cargar y guardar archivos
+        function loadFile() {
+            document.getElementById('file-input').click();
+        }
+
+        document.getElementById('file-input').addEventListener('change', function (e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function (e) {
+                const content = e.target.result;
+                document.getElementById('code-editor').value = content;
+                document.getElementById('code-hidden').value = content;
+                updateLineNumbers();
+
+                const consoleOutput = document.getElementById('console');
+                consoleOutput.innerHTML += `\nArchivo cargado: ${file.name}`;
+            };
+            reader.readAsText(file);
+        });
+
+        function saveFile() {
+            const code = document.getElementById('code-editor').value;
+            const blob = new Blob([code], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'programa.pw';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+
+            const consoleOutput = document.getElementById('console');
+            consoleOutput.innerHTML += `\nArchivo guardado como programa.pw`;
+        }
+    </script>
+
+    <style>
+        #code-editor-container {
+            position: relative;
+            border: 1px solid #ccc;
+            height: 400px;
+            overflow: hiden;
+        }
+
+        #line-numbers {
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 40px;
+            height: 100%;
+            background-color: #f5f5f5;
+            overflow-y: hidden;
+            border-right: 1px solid #ddd;
+            text-align: right;
+            padding: 10px 5px 10px 0;
+            font-family: monospace;
+            user-select: none;
+            color: #999;
+            box-sizing: border-box;
+        }
+
+        .line-number {
+            height: 20px;
+            /* Altura fija para cada número de línea */
+            line-height: 20px;
+            /* Alinear verticalmente */
+            padding-right: 5px;
+        }
+
+        #code-editor {
+            margin-left: 40px;
+            width: calc(100% - 40px);
+            height: 100%;
+            border: none;
+            resize: none;
+            font-family: monospace;
+            padding: 10px;
+            line-height: 1.5;
+            line-height: 20px;
+            /* Mismo line-height que los números */
+            overflow-y: auto;
+        }
+
+        #canvas-container {
+            min-height: 400px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background-color: #f8f9fa;
+        }
+
+        #pixel-canvas {
+            image-rendering: pixelated;
+            border: 1px solid #ddd;
+            background-color: white;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+        }
+
+        .console {
+            height: 200px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 14px;
+            line-height: 1.5;
+            white-space: pre-wrap;
+            margin: 0;
+        }
+    </style>
+}
