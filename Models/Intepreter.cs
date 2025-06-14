@@ -2,20 +2,37 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Linq;
+using System.Text;
 
 public class Interpreter
 {
-    private readonly ProgramNode ast;
-    private readonly int canvasSize;
-    private Dictionary<string, object> variables;
-    private Dictionary<string, LabelNode> labels;
-    private string[,] canvas;
-    private int currentX;
-    private int currentY;
-    private string currentColor;
-    private int brushSize;
-    private string consoleOutput;
-    private List<PixelData> pixelData;
+    protected readonly ProgramNode ast;
+    protected readonly int canvasSize;
+
+    protected List<Statement> flattenedStatements;
+    protected Dictionary<string, int> labelToIndex;
+    protected Dictionary<string, object> variables;
+    protected Dictionary<string, LabelNode> labels;
+    protected string[,] canvas;
+
+    // Estado público de Wall-E
+    public int CurrentX { get; protected set; }
+    public int CurrentY { get; protected set; }
+    public string CurrentColor { get; protected set; }
+    public int BrushSize { get; protected set; }
+
+    protected string consoleOutput;
+    protected List<PixelData> pixelData;
+
+    // Control de flujo para GoTo
+    protected bool shouldJump;
+    protected string jumpLabel;
+    protected Stack<ExecutionContext> executionStack;
+    protected Dictionary<string, int> labelIndexes = new Dictionary<string, int>();
+
+    // Para mantener el estado parcial en caso de error
+    protected bool hasError = false;
+    protected string errorMessage = "";
 
     public Interpreter(ProgramNode ast, int canvasSize)
     {
@@ -24,14 +41,33 @@ public class Interpreter
         this.variables = new Dictionary<string, object>();
         this.labels = new Dictionary<string, LabelNode>();
         this.canvas = new string[canvasSize, canvasSize];
-        this.currentX = 0;
-        this.currentY = 0;
-        this.currentColor = "Transparent";
-        this.brushSize = 1;
+        this.CurrentX = 0;
+        this.CurrentY = 0;
+        this.CurrentColor = "Transparent";
+        this.BrushSize = 1;
         this.consoleOutput = "";
         this.pixelData = new List<PixelData>();
+        this.shouldJump = false;
+        this.jumpLabel = "";
+
 
         // Inicializar el canvas con color blanco
+        InitializeCanvas();
+
+        this.flattenedStatements = new List<Statement>();
+        this.labelToIndex = new Dictionary<string, int>();
+
+        FlattenAndMapStatements(ast.Statements);
+
+        DebugPrintInternalState();
+
+
+    }
+
+
+
+    private void InitializeCanvas()
+    {
         for (int i = 0; i < canvasSize; i++)
         {
             for (int j = 0; j < canvasSize; j++)
@@ -39,78 +75,192 @@ public class Interpreter
                 canvas[i, j] = "White";
             }
         }
-
-        // Recolectar las etiquetas del programa
-        CollectLabels(ast.Statements);
     }
-
-    private void CollectLabels(List<Statement> statements)
+    private void FlattenAndMapStatements(List<Statement> statements)
     {
+        Console.WriteLine($"DEBUG: Procesando {statements?.Count ?? 0} statements");
+
+        if (statements == null)
+        {
+            Console.WriteLine("DEBUG: Lista de statements es null");
+            return;
+        }
+
         foreach (var statement in statements)
         {
+            Console.WriteLine($"DEBUG: Procesando {statement.GetType().Name} en línea {statement.Line}");
+
             if (statement is LabelNode labelNode)
             {
-                labels[labelNode.Name] = labelNode;
-                CollectLabels(labelNode.Programa.Statements);
+                Console.WriteLine($"DEBUG: Encontrada etiqueta '{labelNode.Name}' -> mapeando a índice {flattenedStatements.Count}");
+
+                // Mapear la etiqueta al índice actual
+                labelToIndex[labelNode.Name] = flattenedStatements.Count;
+
+                // Procesar statements internos de la etiqueta
+                if (labelNode.Programa?.Statements != null)
+                {
+                    Console.WriteLine($"DEBUG: Etiqueta '{labelNode.Name}' tiene {labelNode.Programa.Statements.Count} statements internos");
+                    FlattenAndMapStatements(labelNode.Programa.Statements);
+                }
+                else
+                {
+                    Console.WriteLine($"DEBUG: Etiqueta '{labelNode.Name}' no tiene statements internos");
+                }
+            }
+            else
+            {
+                Console.WriteLine($"DEBUG: Agregando statement {statement.GetType().Name} al índice {flattenedStatements.Count}");
+                flattenedStatements.Add(statement);
             }
         }
     }
 
-    // Agrega estas líneas de depuración al método Execute() del intérprete
+    private void DebugPrintInternalState()
+    {
+        Console.WriteLine("=== DEBUG: Estado Interno del Intérprete ===");
+
+        Console.WriteLine($"\nTotal de statements aplanados: {flattenedStatements?.Count ?? 0}");
+
+        if (flattenedStatements != null)
+        {
+            for (int i = 0; i < flattenedStatements.Count; i++)
+            {
+                var stmt = flattenedStatements[i];
+                Console.WriteLine($"[{i}] {stmt.GetType().Name} (Línea {stmt.Line}, Columna {stmt.Column})");
+
+                // Mostrar detalles adicionales para diferentes tipos de statements
+                if (stmt is AssigmentNode assignment)
+                {
+                    Console.WriteLine($"    -> Variable: {assignment.VariableName}");
+                }
+                else if (stmt is Instruction instruction)
+                {
+                    Console.WriteLine($"    -> Instrucción: {instruction.Name}");
+                }
+            }
+        }
+
+        Console.WriteLine($"\nEtiquetas mapeadas: {labelToIndex?.Count ?? 0}");
+        if (labelToIndex != null)
+        {
+            foreach (var kvp in labelToIndex)
+            {
+                Console.WriteLine($"  '{kvp.Key}' -> índice {kvp.Value}");
+            }
+        }
+
+        Console.WriteLine("=== FIN DEBUG ===\n");
+    }
+    public Dictionary<string, object> GetVariables()
+    {
+        return new Dictionary<string, object>(variables);
+    }
+
+
+
+
     public ExecutionResult Execute()
     {
         try
         {
-            ExecuteStatements(ast.Statements);
+            int currentIndex = 0;
+            int maxExecutionSteps = 10000;
+            int executionSteps = 0;
 
-            // Depuración: Mostrar cuántos píxeles se generaron
-            var pixelData = GeneratePixelData();
-            consoleOutput += $"\nDebug: Se generaron {pixelData.Count} píxeles.";
-
-            if (pixelData.Count > 0)
+            // Usar la estructura ya aplanada que preparamos en el constructor
+            while (currentIndex < flattenedStatements.Count && !hasError && executionSteps < maxExecutionSteps)
             {
-                // Mostrar el primer píxel para verificar su formato
-                var firstPixel = pixelData[0];
-                consoleOutput += $"\nDebug: Primer píxel en ({firstPixel.X}, {firstPixel.Y}) con color {firstPixel.Color}";
+                executionSteps++;
+                Statement statement = flattenedStatements[currentIndex];
+
+                try
+                {
+                    ExecuteStatement(statement);
+
+                    // Manejar saltos usando nuestro diccionario pre-construido
+                    if (shouldJump)
+                    {
+                        if (labelToIndex.ContainsKey(jumpLabel))
+                        {
+                            currentIndex = labelToIndex[jumpLabel];
+                            shouldJump = false;
+                            jumpLabel = "";
+                            continue;
+                        }
+                        else
+                        {
+                            throw new Exception($"Etiqueta no encontrada: {jumpLabel}");
+                        }
+                    }
+
+                    currentIndex++;
+                }
+                catch (Exception ex)
+                {
+                    hasError = true;
+                    errorMessage = $"Error en línea {statement.Line}, columna {statement.Column}: {ex.Message}";
+                    consoleOutput += $"\n{errorMessage}\n";
+                }
+            }
+
+            // Verificar si se detuvo por límite de ejecución
+            if (executionSteps >= maxExecutionSteps)
+            {
+                consoleOutput += "\nAdvertencia: Ejecución detenida por límite de seguridad. Posible loop infinito.\n";
+            }
+
+            var resultPixelData = GeneratePixelData();
+
+            if (hasError)
+            {
+                consoleOutput += $"\nEjecución detenida por error. Se dibujaron {resultPixelData.Count} píxeles hasta el momento del error.\n";
+            }
+            else
+            {
+                consoleOutput += $"\nEjecución completa. Se generaron {resultPixelData.Count} píxeles.\n";
             }
 
             return new ExecutionResult
             {
-                PixelData = pixelData,
-                ConsoleOutput = consoleOutput
+                PixelData = resultPixelData,
+                ConsoleOutput = consoleOutput,
+                ErrorMessage = hasError ? errorMessage : ""
             };
         }
         catch (Exception ex)
         {
             consoleOutput += $"Error de ejecución: {ex.Message}\n";
+
             return new ExecutionResult
             {
-                PixelData = new List<PixelData>(),
-                ConsoleOutput = consoleOutput
+                PixelData = GeneratePixelData(),
+                ConsoleOutput = consoleOutput,
+                ErrorMessage = ex.Message
             };
         }
     }
-    private List<PixelData> GeneratePixelData()
+    // Método auxiliar para encontrar el índice de un label
+    private int FindLabelIndex(string labelName, List<Statement> statements)
+    {
+        for (int i = 0; i < statements.Count; i++)
+        {
+            if (statements[i] is LabelNode label && label.Name == labelName)
+            {
+                return i;
+            }
+        }
+        return -1; // No encontrado
+    }
+
+    public List<PixelData> GeneratePixelData()
     {
         var result = new List<PixelData>();
 
-        // Recorrer toda la matriz del canvas
         for (int y = 0; y < canvasSize; y++)
         {
             for (int x = 0; x < canvasSize; x++)
             {
-                // TEMPORAL PARA DEPURACIÓN: Incluir todos los píxeles incluyendo blancos 
-                // para ver qué está pasando
-                result.Add(new PixelData
-                {
-                    X = x,
-                    Y = y,
-                    Color = canvas[y, x]
-                });
-
-                // Después puedes volver a la condición original:
-                // Solo agregar píxeles que no sean blancos
-                /*
                 if (canvas[y, x] != "White" && canvas[y, x] != "Transparent")
                 {
                     result.Add(new PixelData
@@ -120,59 +270,39 @@ public class Interpreter
                         Color = canvas[y, x]
                     });
                 }
-                */
             }
-        }
-
-        // Depuración: Imprimir algunos datos
-        Console.WriteLine($"GeneratePixelData: Generados {result.Count} píxeles totales.");
-
-        if (result.Count > 0)
-        {
-            Console.WriteLine($"Primer píxel: ({result[0].X}, {result[0].Y}) - {result[0].Color}");
-        }
-        else
-        {
-            Console.WriteLine("¡No se generaron píxeles!");
         }
 
         return result;
     }
-    private void ExecuteStatements(List<Statement> statements, int startIndex = 0)
+
+    protected void ExecuteStatement(Statement statement)
     {
-        for (int i = startIndex; i < statements.Count; i++)
+        switch (statement)
         {
-            ExecuteStatement(statements[i]);
+            case AssigmentNode assignmentNode:
+                ExecuteAssignment(assignmentNode);
+                break;
+            case Instruction instruction:
+                ExecuteInstruction(instruction);
+                break;
+            case LabelNode:
+                // Las etiquetas no se ejecutan directamente en el flujo secuencial
+                break;
+            case FunctionCallStatement functionCallStatement:
+                EvaluateExpression(functionCallStatement.FunctionCall);
+                break;
+            default:
+                throw new Exception($"Tipo de statement no reconocido: {statement.GetType().Name}");
         }
     }
-
-    private void ExecuteStatement(Statement statement)
-    {
-        if (statement is AssigmentNode assignmentNode)
-        {
-            ExecuteAssignment(assignmentNode);
-        }
-        else if (statement is Instruction instruction)
-        {
-            ExecuteInstruction(instruction);
-        }
-        else if (statement is LabelNode)
-        {
-            // Las etiquetas no se ejecutan directamente
-        }
-        else if (statement is FunctionCallStatement functionCallStatement)
-        {
-            EvaluateExpression(functionCallStatement.FunctionCall);
-        }
-    }
-
-    private void ExecuteAssignment(AssigmentNode assignment)
+    protected void ExecuteAssignment(AssigmentNode assignment)
     {
         object value = EvaluateExpression(assignment.Value);
         variables[assignment.VariableName] = value;
     }
 
-    private void ExecuteInstruction(Instruction instruction)
+    protected void ExecuteInstruction(Instruction instruction)
     {
         switch (instruction.Name)
         {
@@ -205,7 +335,9 @@ public class Interpreter
         }
     }
 
-    private void ExecuteSpawn(Instruction instruction)
+    #region Instrucciones específicas
+
+    protected void ExecuteSpawn(Instruction instruction)
     {
         if (instruction.Arguments.Count != 2)
         {
@@ -220,11 +352,11 @@ public class Interpreter
             throw new Exception($"Coordenadas de Spawn ({x}, {y}) fuera de los límites del canvas");
         }
 
-        currentX = x;
-        currentY = y;
+        CurrentX = x;
+        CurrentY = y;
     }
 
-    private void ExecuteColor(Instruction instruction)
+    protected void ExecuteColor(Instruction instruction)
     {
         if (instruction.Arguments.Count != 1)
         {
@@ -238,21 +370,10 @@ public class Interpreter
             throw new Exception($"Color no válido: {color}");
         }
 
-        currentColor = color;
+        CurrentColor = color;
     }
 
-    private bool IsValidColor(string color)
-    {
-        string[] validColors =
-        {
-            "Red", "Blue", "Green", "Yellow",
-            "Orange", "Purple", "Black", "White", "Transparent"
-        };
-
-        return Array.Exists(validColors, c => c == color);
-    }
-
-    private void ExecuteSize(Instruction instruction)
+    protected void ExecuteSize(Instruction instruction)
     {
         if (instruction.Arguments.Count != 1)
         {
@@ -272,10 +393,10 @@ public class Interpreter
             size--;
         }
 
-        brushSize = size;
+        BrushSize = size;
     }
 
-    private void ExecuteDrawLine(Instruction instruction)
+    protected void ExecuteDrawLine(Instruction instruction)
     {
         if (instruction.Arguments.Count != 3)
         {
@@ -286,69 +407,19 @@ public class Interpreter
         int dirY = Convert.ToInt32(EvaluateExpression(instruction.Arguments[1]));
         int distance = Convert.ToInt32(EvaluateExpression(instruction.Arguments[2]));
 
-        if (dirX < -1 || dirX > 1 || dirY < -1 || dirY > 1)
-        {
-            throw new Exception("Las direcciones para DrawLine deben ser -1, 0 o 1");
-        }
-
-        if (dirX == 0 && dirY == 0)
-        {
-            throw new Exception("La dirección para DrawLine no puede ser (0, 0)");
-        }
+        ValidateDirection(dirX, dirY, "DrawLine");
 
         if (distance <= 0)
         {
             throw new Exception("La distancia para DrawLine debe ser positiva");
         }
 
-        // Dibujar la línea
         DrawLine(dirX, dirY, distance);
     }
 
-    private void DrawLine(int dirX, int dirY, int distance)
-    {
-        if (currentColor == "Transparent")
-        {
-            // Si el color es transparente, solo mover la posición
-            currentX += dirX * distance;
-            currentY += dirY * distance;
-            return;
-        }
 
-        int startX = currentX;
-        int startY = currentY;
 
-        // Calculamos el desplazamiento para cada paso
-        int offsetSize = brushSize / 2;
-
-        for (int i = 0; i <= distance; i++)
-        {
-            int posX = startX + dirX * i;
-            int posY = startY + dirY * i;
-
-            // Dibujar el punto y sus adyacentes según el tamaño del pincel
-            for (int dy = -offsetSize; dy <= offsetSize; dy++)
-            {
-                for (int dx = -offsetSize; dx <= offsetSize; dx++)
-                {
-                    int x = posX + dx;
-                    int y = posY + dy;
-
-                    // Verificar que esté dentro del canvas
-                    if (x >= 0 && x < canvasSize && y >= 0 && y < canvasSize)
-                    {
-                        canvas[y, x] = currentColor;
-                    }
-                }
-            }
-        }
-
-        // Actualizar la posición actual de Wall-E
-        currentX = startX + dirX * distance;
-        currentY = startY + dirY * distance;
-    }
-
-    private void ExecuteDrawCircle(Instruction instruction)
+    protected void ExecuteDrawCircle(Instruction instruction)
     {
         if (instruction.Arguments.Count != 3)
         {
@@ -359,15 +430,9 @@ public class Interpreter
         int dirY = Convert.ToInt32(EvaluateExpression(instruction.Arguments[1]));
         int radius = Convert.ToInt32(EvaluateExpression(instruction.Arguments[2]));
 
-        if (dirX < -1 || dirX > 1 || dirY < -1 || dirY > 1)
-        {
-            throw new Exception("Las direcciones para DrawCircle deben ser -1, 0 o 1");
-        }
+        ValidateDirection(dirX, dirY, "DrawCircle");
 
-        if (dirX == 0 && dirY == 0)
-        {
-            throw new Exception("La dirección para DrawCircle no puede ser (0, 0)");
-        }
+
 
         if (radius <= 0)
         {
@@ -375,20 +440,175 @@ public class Interpreter
         }
 
         // Calcular el centro del círculo
-        int centerX = currentX + dirX * radius;
-        int centerY = currentY + dirY * radius;
+        int centerX = CurrentX + dirX * radius;
+        int centerY = CurrentY + dirY * radius;
 
-        // Dibujar el círculo
+        if (centerX < 0 || centerX >= canvasSize || centerY < 0 || centerY >= canvasSize)
+        {
+            throw new Exception($"El centro del círculo estaría fuera del canvas en ({centerX}, {centerY}). Canvas size: {canvasSize}x{canvasSize}");
+        }
+
+
         DrawCircle(centerX, centerY, radius);
 
         // Actualizar la posición actual de Wall-E
-        currentX = centerX;
-        currentY = centerY;
+        CurrentX = centerX;
+        CurrentY = centerY;
     }
 
-    private void DrawCircle(int centerX, int centerY, int radius)
+    protected void ExecuteDrawRectangle(Instruction instruction)
     {
-        if (currentColor == "Transparent")
+        if (instruction.Arguments.Count != 5)
+        {
+            throw new Exception("DrawRectangle requiere exactamente 5 argumentos");
+        }
+
+        int dirX = Convert.ToInt32(EvaluateExpression(instruction.Arguments[0]));
+        int dirY = Convert.ToInt32(EvaluateExpression(instruction.Arguments[1]));
+        int distance = Convert.ToInt32(EvaluateExpression(instruction.Arguments[2]));
+        int width = Convert.ToInt32(EvaluateExpression(instruction.Arguments[3]));
+        int height = Convert.ToInt32(EvaluateExpression(instruction.Arguments[4]));
+
+        ValidateDirection(dirX, dirY, "DrawRectangle");
+
+        if (distance <= 0 || width <= 0 || height <= 0)
+        {
+            throw new Exception("La distancia, ancho y alto para DrawRectangle deben ser positivos");
+        }
+
+        // Calcular el centro del rectángulo
+        int centerX = CurrentX + dirX * distance;
+        int centerY = CurrentY + dirY * distance;
+
+        if (centerX < 0 || centerX >= canvasSize || centerY < 0 || centerY >= canvasSize)
+        {
+            throw new Exception($"El centro del círculo estaría fuera del canvas en ({centerX}, {centerY}). Canvas size: {canvasSize}x{canvasSize}");
+        }
+
+
+        DrawRectangle(centerX, centerY, width, height);
+
+        // Actualizar la posición actual de Wall-E
+        CurrentX = centerX;
+        CurrentY = centerY;
+    }
+
+    protected void ExecuteFill(Instruction instruction)
+    {
+        if (instruction.Arguments.Count != 0)
+        {
+            throw new Exception("Fill no debe tener argumentos");
+        }
+
+        if (CurrentColor == "Transparent")
+        {
+            return;
+        }
+
+        // Validar posición actual
+        if (CurrentX < 0 || CurrentX >= canvasSize || CurrentY < 0 || CurrentY >= canvasSize)
+        {
+            return;
+        }
+
+        string targetColor = canvas[CurrentY, CurrentX];
+
+        // No hacer nada si el color objetivo es igual al color actual
+        if (targetColor == CurrentColor)
+        {
+            return;
+        }
+
+        // Algoritmo de flood fill iterativo para evitar desbordamiento de pila
+        FloodFillIterative(CurrentX, CurrentY, targetColor);
+    }
+
+    protected void ExecuteGoTo(Instruction instruction)
+    {
+        if (instruction.Arguments.Count != 2)
+        {
+            throw new Exception("GoTo requiere exactamente 2 argumentos");
+        }
+
+        string labelName = EvaluateExpression(instruction.Arguments[0]).ToString().Trim('"');
+        bool condition = Convert.ToBoolean(EvaluateExpression(instruction.Arguments[1]));
+
+        Console.WriteLine($"DEBUG GoTo: Evaluando salto a '{labelName}', condición = {condition}");
+        Console.WriteLine($"DEBUG GoTo: Etiquetas disponibles: [{string.Join(", ", labelToIndex.Keys)}]");
+
+        if (!labelToIndex.ContainsKey(labelName))
+        {
+            Console.WriteLine($"DEBUG GoTo: Etiqueta '{labelName}' NO encontrada en el diccionario");
+            throw new Exception($"Etiqueta no encontrada: {labelName}");
+        }
+
+        if (condition)
+        {
+            Console.WriteLine($"DEBUG GoTo: Saltando a etiqueta '{labelName}' (índice {labelToIndex[labelName]})");
+            shouldJump = true;
+            jumpLabel = labelName;
+        }
+        else
+        {
+            Console.WriteLine($"DEBUG GoTo: Condición falsa, no saltando");
+        }
+    }
+    #endregion
+
+    #region Funciones de dibujo
+
+    protected void DrawLine(int dirX, int dirY, int distance)
+    {
+        if (CurrentColor == "Transparent")
+        {
+            // Para movimiento transparente, Wall-E se mueve la distancia completa
+            // MÁS un pixel adicional
+            int newX = CurrentX + dirX * (distance + 1);
+            int newY = CurrentY + dirY * (distance + 1);
+
+            if (newX < 0 || newX >= canvasSize || newY < 0 || newY >= canvasSize)
+            {
+                throw new Exception($"Wall-E se movería fuera del canvas a ({newX}, {newY})");
+            }
+
+            CurrentX = newX;
+            CurrentY = newY;
+            return;
+        }
+
+        int startX = CurrentX;
+        int startY = CurrentY;
+
+        // Calcular dónde termina la línea
+        int lineEndX = startX + dirX * distance;
+        int lineEndY = startY + dirY * distance;
+
+        // Wall-E se posiciona UN pixel más allá del final de la línea
+        int walleNewX = lineEndX + dirX;
+        int walleNewY = lineEndY + dirY;
+
+        // Validar que la línea completa y la posición de Wall-E estén en el canvas
+        if (lineEndX < 0 || lineEndX >= canvasSize || lineEndY < 0 || lineEndY >= canvasSize ||
+            walleNewX < 0 || walleNewX >= canvasSize || walleNewY < 0 || walleNewY >= canvasSize)
+        {
+            throw new Exception("La línea o la posición final de Wall-E estarían fuera del canvas");
+        }
+
+        // Dibujar cada pixel de la línea
+        for (int step = 0; step <= distance; step++)
+        {
+            int currentX = startX + dirX * step;
+            int currentY = startY + dirY * step;
+            DrawPixelWithBrush(currentX, currentY);
+        }
+
+        // Posicionar Wall-E un pixel después del final de la línea
+        CurrentX = walleNewX;
+        CurrentY = walleNewY;
+    }
+    protected void DrawCircle(int centerX, int centerY, int radius)
+    {
+        if (CurrentColor == "Transparent")
         {
             return;
         }
@@ -415,85 +635,22 @@ public class Interpreter
         }
     }
 
-    private void DrawCirclePoints(int centerX, int centerY, int x, int y)
+    protected void DrawCirclePoints(int centerX, int centerY, int x, int y)
     {
-        int offsetSize = brushSize / 2;
-
         // Dibujar los 8 puntos simétricos del círculo
-        DrawPixel(centerX + x, centerY + y);
-        DrawPixel(centerX - x, centerY + y);
-        DrawPixel(centerX + x, centerY - y);
-        DrawPixel(centerX - x, centerY - y);
-        DrawPixel(centerX + y, centerY + x);
-        DrawPixel(centerX - y, centerY + x);
-        DrawPixel(centerX + y, centerY - x);
-        DrawPixel(centerX - y, centerY - x);
+        DrawPixelWithBrush(centerX + x, centerY + y);
+        DrawPixelWithBrush(centerX - x, centerY + y);
+        DrawPixelWithBrush(centerX + x, centerY - y);
+        DrawPixelWithBrush(centerX - x, centerY - y);
+        DrawPixelWithBrush(centerX + y, centerY + x);
+        DrawPixelWithBrush(centerX - y, centerY + x);
+        DrawPixelWithBrush(centerX + y, centerY - x);
+        DrawPixelWithBrush(centerX - y, centerY - x);
     }
 
-    private void DrawPixel(int x, int y)
+    protected void DrawRectangle(int centerX, int centerY, int width, int height)
     {
-        int offsetSize = brushSize / 2;
-
-        // Dibujar el punto y sus adyacentes según el tamaño del pincel
-        for (int dy = -offsetSize; dy <= offsetSize; dy++)
-        {
-            for (int dx = -offsetSize; dx <= offsetSize; dx++)
-            {
-                int px = x + dx;
-                int py = y + dy;
-
-                // Verificar que esté dentro del canvas
-                if (px >= 0 && px < canvasSize && py >= 0 && py < canvasSize)
-                {
-                    canvas[py, px] = currentColor;
-                }
-            }
-        }
-    }
-
-    private void ExecuteDrawRectangle(Instruction instruction)
-    {
-        if (instruction.Arguments.Count != 5)
-        {
-            throw new Exception("DrawRectangle requiere exactamente 5 argumentos");
-        }
-
-        int dirX = Convert.ToInt32(EvaluateExpression(instruction.Arguments[0]));
-        int dirY = Convert.ToInt32(EvaluateExpression(instruction.Arguments[1]));
-        int distance = Convert.ToInt32(EvaluateExpression(instruction.Arguments[2]));
-        int width = Convert.ToInt32(EvaluateExpression(instruction.Arguments[3]));
-        int height = Convert.ToInt32(EvaluateExpression(instruction.Arguments[4]));
-
-        if (dirX < -1 || dirX > 1 || dirY < -1 || dirY > 1)
-        {
-            throw new Exception("Las direcciones para DrawRectangle deben ser -1, 0 o 1");
-        }
-
-        if (dirX == 0 && dirY == 0)
-        {
-            throw new Exception("La dirección para DrawRectangle no puede ser (0, 0)");
-        }
-
-        if (distance <= 0 || width <= 0 || height <= 0)
-        {
-            throw new Exception("La distancia, ancho y alto para DrawRectangle deben ser positivos");
-        }
-
-        // Calcular el centro del rectángulo
-        int centerX = currentX + dirX * distance;
-        int centerY = currentY + dirY * distance;
-
-        // Dibujar el rectángulo
-        DrawRectangle(centerX, centerY, width, height);
-
-        // Actualizar la posición actual de Wall-E
-        currentX = centerX;
-        currentY = centerY;
-    }
-
-    private void DrawRectangle(int centerX, int centerY, int width, int height)
-    {
-        if (currentColor == "Transparent")
+        if (CurrentColor == "Transparent")
         {
             return;
         }
@@ -506,290 +663,249 @@ public class Interpreter
         // Dibujar los bordes horizontales
         for (int x = left; x <= right; x++)
         {
-            DrawPixel(x, top);
-            DrawPixel(x, bottom);
+            DrawPixelWithBrush(x, top);
+            DrawPixelWithBrush(x, bottom);
         }
 
-        // Dibujar los bordes verticales
+        // Dibujar los bordes verticales (sin repetir las esquinas)
         for (int y = top + 1; y < bottom; y++)
         {
-            DrawPixel(left, y);
-            DrawPixel(right, y);
+            DrawPixelWithBrush(left, y);
+            DrawPixelWithBrush(right, y);
         }
     }
 
-    private void ExecuteFill(Instruction instruction)
+    protected void DrawPixelWithBrush(int centerX, int centerY)
     {
-        if (instruction.Arguments.Count != 0)
-        {
-            throw new Exception("Fill no debe tener argumentos");
-        }
-
-        if (currentColor == "Transparent")
+        // Validar que el centro esté dentro del canvas
+        if (centerX < 0 || centerX >= canvasSize || centerY < 0 || centerY >= canvasSize)
         {
             return;
         }
 
-        // Obtener el color a reemplazar
-        string targetColor = canvas[currentY, currentX];
+        int halfBrush = BrushSize / 2;
 
-        // No hacer nada si el color objetivo es igual al color actual
-        if (targetColor == currentColor)
+        // Dibujar con el tamaño de brocha especificado
+        // Cada iteración dibuja exactamente UN pixel
+        for (int dy = -halfBrush; dy <= halfBrush; dy++)
         {
-            return;
-        }
+            for (int dx = -halfBrush; dx <= halfBrush; dx++)
+            {
+                int pixelX = centerX + dx;
+                int pixelY = centerY + dy;
 
-        // Algoritmo de flood fill (implementación recursiva)
-        FloodFill(currentX, currentY, targetColor);
+                // Verificar que este pixel individual esté dentro del canvas
+                if (pixelX >= 0 && pixelX < canvasSize &&
+                    pixelY >= 0 && pixelY < canvasSize)
+                {
+                    // Aquí es donde realmente pintamos UN pixel
+                    canvas[pixelY, pixelX] = CurrentColor;
+                }
+            }
+        }
     }
-
-    private void FloodFill(int x, int y, string targetColor)
+    protected void FloodFillIterative(int startX, int startY, string targetColor)
     {
-        // Verificar límites del canvas
-        if (x < 0 || x >= canvasSize || y < 0 || y >= canvasSize)
+        var stack = new Stack<(int x, int y)>();
+        stack.Push((startX, startY));
+
+        while (stack.Count > 0)
         {
-            return;
-        }
+            var (x, y) = stack.Pop();
 
-        // Verificar si el pixel es del color objetivo
-        if (canvas[y, x] != targetColor)
-        {
-            return;
-        }
+            // Verificar límites del canvas
+            if (x < 0 || x >= canvasSize || y < 0 || y >= canvasSize)
+            {
+                continue;
+            }
 
-        // Pintar el pixel
-        canvas[y, x] = currentColor;
+            // Verificar si el pixel es del color objetivo
+            if (canvas[y, x] != targetColor)
+            {
+                continue;
+            }
 
-        // Continuar con los píxeles adyacentes
-        FloodFill(x + 1, y, targetColor);
-        FloodFill(x - 1, y, targetColor);
-        FloodFill(x, y + 1, targetColor);
-        FloodFill(x, y - 1, targetColor);
-    }
+            // Pintar el pixel
+            canvas[y, x] = CurrentColor;
 
-    private void ExecuteGoTo(Instruction instruction)
-    {
-        if (instruction.Arguments.Count != 2)
-        {
-            throw new Exception("GoTo requiere exactamente 2 argumentos");
-        }
-
-        string labelName = EvaluateExpression(instruction.Arguments[0]).ToString().Trim('"');
-        bool condition = Convert.ToBoolean(EvaluateExpression(instruction.Arguments[1]));
-
-        if (!labels.ContainsKey(labelName))
-        {
-            throw new Exception($"Etiqueta no encontrada: {labelName}");
-        }
-
-        if (condition)
-        {
-            // Ejecutar los statements de la etiqueta
-            ExecuteStatements(labels[labelName].Programa.Statements);
+            // Agregar píxeles adyacentes a la pila
+            stack.Push((x + 1, y));
+            stack.Push((x - 1, y));
+            stack.Push((x, y + 1));
+            stack.Push((x, y - 1));
         }
     }
 
-    private object EvaluateExpression(ExpressionNode expression)
+    #endregion
+
+    #region Evaluación de expresiones
+
+    protected object EvaluateExpression(ExpressionNode expression)
     {
-        if (expression is StringExpression stringExpr)
+        return expression switch
         {
-            return stringExpr.Value;
+            StringExpression stringExpr => stringExpr.Value,
+            NumberNode numberNode => numberNode.Value,
+            BoolLiteralNode boolNode => boolNode.Value,
+            VariableNode variableNode => EvaluateVariable(variableNode),
+            FunctionCall functionCall => EvaluateFunction(functionCall),
+            AdditiveExpression addExpr => EvaluateAdditiveExpression(addExpr),
+            MultiplicativeExpression multExpr => EvaluateMultiplicativeExpression(multExpr),
+            PowerExpression powExpr => EvaluatePowerExpression(powExpr),
+            UnaryExpressionNode unaryExpr => EvaluateUnaryExpression(unaryExpr),
+            ParenthesizedExpression parenExpr => EvaluateExpression(parenExpr.Expression),
+            OrExpression orExpr => EvaluateOrExpression(orExpr),
+            AndExpression andExpr => EvaluateAndExpression(andExpr),
+            ComparisonExpression compExpr => EvaluateComparisonExpression(compExpr),
+            _ => throw new Exception($"Tipo de expresión no soportado: {expression.GetType().Name}")
+        };
+    }
+
+    protected object EvaluateVariable(VariableNode variableNode)
+    {
+        if (!variables.ContainsKey(variableNode.Name))
+        {
+            throw new Exception($"Variable no definida: {variableNode.Name}");
         }
-        else if (expression is NumberNode numberNode)
+        return variables[variableNode.Name];
+    }
+
+    protected int EvaluateAdditiveExpression(AdditiveExpression addExpr)
+    {
+        int left = Convert.ToInt32(EvaluateExpression(addExpr.Left));
+
+        if (addExpr.Right != null && addExpr.Operator.HasValue)
         {
-            return numberNode.Value;
+            int right = Convert.ToInt32(EvaluateExpression(addExpr.Right));
+            return addExpr.Operator.Value == Tipo.SUM ? left + right : left - right;
         }
-        else if (expression is BoolLiteralNode boolNode)
+
+        return left;
+    }
+
+    protected int EvaluateMultiplicativeExpression(MultiplicativeExpression multExpr)
+    {
+        int left = Convert.ToInt32(EvaluateExpression(multExpr.Left));
+
+        if (multExpr.Right != null && multExpr.Operator.HasValue)
         {
-            return boolNode.Value;
-        }
-        else if (expression is VariableNode variableNode)
-        {
-            if (!variables.ContainsKey(variableNode.Name))
+            int right = Convert.ToInt32(EvaluateExpression(multExpr.Right));
+
+            return multExpr.Operator.Value switch
             {
-                throw new Exception($"Variable no definida: {variableNode.Name}");
+                Tipo.MULT => left * right,
+                Tipo.DIV => right == 0 ? throw new DivideByZeroException("División por cero") : left / right,
+                Tipo.MOD => right == 0 ? throw new DivideByZeroException("Módulo por cero") : left % right,
+                _ => throw new Exception($"Operador multiplicativo no válido: {multExpr.Operator.Value}")
+            };
+        }
+
+        return left;
+    }
+
+    protected int EvaluatePowerExpression(PowerExpression powExpr)
+    {
+        int baseValue = Convert.ToInt32(EvaluateExpression(powExpr.Base));
+
+        if (powExpr.Exponent != null)
+        {
+            int exponent = Convert.ToInt32(EvaluateExpression(powExpr.Exponent));
+            return (int)Math.Pow(baseValue, exponent);
+        }
+
+        return baseValue;
+    }
+
+    protected int EvaluateUnaryExpression(UnaryExpressionNode unaryExpr)
+    {
+        int value = Convert.ToInt32(EvaluateExpression(unaryExpr.Module));
+        return unaryExpr.Sign ? -value : value;
+    }
+
+    protected bool EvaluateOrExpression(OrExpression orExpr)
+    {
+        bool left = Convert.ToBoolean(EvaluateExpression(orExpr.Left));
+
+        if (orExpr.Right != null)
+        {
+            bool right = Convert.ToBoolean(EvaluateExpression(orExpr.Right));
+            return left || right;
+        }
+
+        return left;
+    }
+
+    protected bool EvaluateAndExpression(AndExpression andExpr)
+    {
+        bool left = Convert.ToBoolean(EvaluateExpression(andExpr.Left));
+
+        if (andExpr.Right != null)
+        {
+            bool right = Convert.ToBoolean(EvaluateExpression(andExpr.Right));
+            return left && right;
+        }
+
+        return left;
+    }
+
+    protected bool EvaluateComparisonExpression(ComparisonExpression compExpr)
+    {
+        var left = EvaluateExpression(compExpr.Left);
+
+        if (compExpr.Right != null && compExpr.Operator.HasValue)
+        {
+            var right = EvaluateExpression(compExpr.Right);
+
+            if (left is int leftInt && right is int rightInt)
+            {
+                return compExpr.Operator.Value switch
+                {
+                    Tipo.EQUALS => leftInt == rightInt,
+                    Tipo.GREATER => leftInt > rightInt,
+                    Tipo.LESSER => leftInt < rightInt,
+                    Tipo.GREATER_EQUAL => leftInt >= rightInt,
+                    Tipo.LESSER_EQUAL => leftInt <= rightInt,
+                    _ => throw new Exception($"Operador de comparación no válido: {compExpr.Operator.Value}")
+                };
             }
-            return variables[variableNode.Name];
-        }
-        else if (expression is FunctionCall functionCall)
-        {
-            return EvaluateFunction(functionCall);
-        }
-        else if (expression is AdditiveExpression addExpr)
-        {
-            var left = Convert.ToInt32(EvaluateExpression(addExpr.Left));
-
-            if (addExpr.Right != null && addExpr.Operator.HasValue)
+            else if (left is bool leftBool && right is bool rightBool)
             {
-                var right = Convert.ToInt32(EvaluateExpression(addExpr.Right));
-
-                if (addExpr.Operator.Value == Tipo.SUM)
+                if (compExpr.Operator.Value == Tipo.EQUALS)
                 {
-                    return left + right;
-                }
-                else if (addExpr.Operator.Value == Tipo.SUB)
-                {
-                    return left - right;
-                }
-            }
-
-            return left;
-        }
-        else if (expression is MultiplicativeExpression multExpr)
-        {
-            var left = Convert.ToInt32(EvaluateExpression(multExpr.Left));
-
-            if (multExpr.Right != null && multExpr.Operator.HasValue)
-            {
-                var right = Convert.ToInt32(EvaluateExpression(multExpr.Right));
-
-                if (multExpr.Operator.Value == Tipo.MULT)
-                {
-                    return left * right;
-                }
-                else if (multExpr.Operator.Value == Tipo.DIV)
-                {
-                    if (right == 0)
-                    {
-                        throw new DivideByZeroException("División por cero");
-                    }
-                    return left / right;
-                }
-                else if (multExpr.Operator.Value == Tipo.MOD)
-                {
-                    if (right == 0)
-                    {
-                        throw new DivideByZeroException("Módulo por cero");
-                    }
-                    return left % right;
-                }
-            }
-
-            return left;
-        }
-        else if (expression is PowerExpression powExpr)
-        {
-            var baseValue = Convert.ToInt32(EvaluateExpression(powExpr.Base));
-
-            if (powExpr.Exponent != null)
-            {
-                var exponent = Convert.ToInt32(EvaluateExpression(powExpr.Exponent));
-                return (int)Math.Pow(baseValue, exponent);
-            }
-
-            return baseValue;
-        }
-        else if (expression is UnaryExpressionNode unaryExpr)
-        {
-            var value = Convert.ToInt32(EvaluateExpression(unaryExpr.Module));
-            return unaryExpr.Sign ? -value : value;
-        }
-        else if (expression is ParenthesizedExpression parenExpr)
-        {
-            return EvaluateExpression(parenExpr.Expression);
-        }
-        else if (expression is OrExpression orExpr)
-        {
-            var left = Convert.ToBoolean(EvaluateExpression(orExpr.Left));
-
-            if (orExpr.Right != null)
-            {
-                var right = Convert.ToBoolean(EvaluateExpression(orExpr.Right));
-                return left || right;
-            }
-
-            return left;
-        }
-        else if (expression is AndExpression andExpr)
-        {
-            var left = Convert.ToBoolean(EvaluateExpression(andExpr.Left));
-
-            if (andExpr.Right != null)
-            {
-                var right = Convert.ToBoolean(EvaluateExpression(andExpr.Right));
-                return left && right;
-            }
-
-            return left;
-        }
-        else if (expression is ComparisonExpression compExpr)
-        {
-            var left = EvaluateExpression(compExpr.Left);
-
-            if (compExpr.Right != null && compExpr.Operator.HasValue)
-            {
-                var right = EvaluateExpression(compExpr.Right);
-
-                if (left is int leftInt && right is int rightInt)
-                {
-                    switch (compExpr.Operator.Value)
-                    {
-                        case Tipo.EQUALS:
-                            return leftInt == rightInt;
-                        case Tipo.GREATER:
-                            return leftInt > rightInt;
-                        case Tipo.LESSER:
-                            return leftInt < rightInt;
-                        case Tipo.GREATER_EQUAL:
-                            return leftInt >= rightInt;
-                        case Tipo.LESSER_EQUAL:
-                            return leftInt <= rightInt;
-                    }
-                }
-                else if (left is bool leftBool && right is bool rightBool)
-                {
-                    if (compExpr.Operator.Value == Tipo.EQUALS)
-                    {
-                        return leftBool == rightBool;
-                    }
+                    return leftBool == rightBool;
                 }
             }
 
-            return Convert.ToBoolean(left);
+            throw new Exception("Tipos incompatibles en comparación");
         }
 
-        throw new Exception($"Tipo de expresión no soportado: {expression.GetType().Name}");
+        return Convert.ToBoolean(left);
     }
 
-    private object EvaluateFunction(FunctionCall functionCall)
+    #endregion
+
+    #region Funciones del lenguaje
+
+    protected object EvaluateFunction(FunctionCall functionCall)
     {
-        switch (functionCall.Name)
+        return functionCall.Name switch
         {
-            case "GetActualX":
-                return GetActualX();
-            case "GetActualY":
-                return GetActualY();
-            case "GetCanvasSize":
-                return GetCanvasSize();
-            case "GetColorCount":
-                return GetColorCount(functionCall);
-            case "IsBrushColor":
-                return IsBrushColor(functionCall);
-            case "IsBrushSize":
-                return IsBrushSize(functionCall);
-            case "IsCanvasColor":
-                return IsCanvasColor(functionCall);
-            default:
-                throw new Exception($"Función desconocida: {functionCall.Name}");
-        }
+            "GetActualX" => GetActualX(),
+            "GetActualY" => GetActualY(),
+            "GetCanvasSize" => GetCanvasSize(),
+            "GetColorCount" => GetColorCount(functionCall),
+            "IsBrushColor" => IsBrushColor(functionCall),
+            "IsBrushSize" => IsBrushSize(functionCall),
+            "IsCanvasColor" => IsCanvasColor(functionCall),
+            _ => throw new Exception($"Función desconocida: {functionCall.Name}")
+        };
     }
 
-    private int GetActualX()
-    {
-        return currentX;
-    }
+    protected int GetActualX() => CurrentX;
+    protected int GetActualY() => CurrentY;
+    protected int GetCanvasSize() => canvasSize;
 
-    private int GetActualY()
-    {
-        return currentY;
-    }
-
-    private int GetCanvasSize()
-    {
-        return canvasSize;
-    }
-
-    private int GetColorCount(FunctionCall functionCall)
+    protected int GetColorCount(FunctionCall functionCall)
     {
         if (functionCall.Arguments.Count != 5)
         {
@@ -802,13 +918,12 @@ public class Interpreter
         int x2 = Convert.ToInt32(EvaluateExpression(functionCall.Arguments[3]));
         int y2 = Convert.ToInt32(EvaluateExpression(functionCall.Arguments[4]));
 
-        // Verificar que el color sea válido
         if (!IsValidColor(color))
         {
             throw new Exception($"Color no válido: {color}");
         }
 
-        // Verificar que las coordenadas estén dentro del canvas
+        // Verificar límites del canvas
         if (x1 < 0 || x1 >= canvasSize || y1 < 0 || y1 >= canvasSize ||
             x2 < 0 || x2 >= canvasSize || y2 < 0 || y2 >= canvasSize)
         {
@@ -816,21 +931,10 @@ public class Interpreter
         }
 
         // Asegurar que x1 <= x2 e y1 <= y2
-        if (x1 > x2)
-        {
-            int temp = x1;
-            x1 = x2;
-            x2 = temp;
-        }
+        if (x1 > x2) (x1, x2) = (x2, x1);
+        if (y1 > y2) (y1, y2) = (y2, y1);
 
-        if (y1 > y2)
-        {
-            int temp = y1;
-            y1 = y2;
-            y2 = temp;
-        }
-
-        // Contar los píxeles del color especificado
+        // Contar píxeles del color especificado
         int count = 0;
         for (int y = y1; y <= y2; y++)
         {
@@ -846,7 +950,7 @@ public class Interpreter
         return count;
     }
 
-    private int IsBrushColor(FunctionCall functionCall)
+    protected int IsBrushColor(FunctionCall functionCall)
     {
         if (functionCall.Arguments.Count != 1)
         {
@@ -860,10 +964,10 @@ public class Interpreter
             throw new Exception($"Color no válido: {color}");
         }
 
-        return currentColor == color ? 1 : 0;
+        return CurrentColor == color ? 1 : 0;
     }
 
-    private int IsBrushSize(FunctionCall functionCall)
+    protected int IsBrushSize(FunctionCall functionCall)
     {
         if (functionCall.Arguments.Count != 1)
         {
@@ -871,11 +975,10 @@ public class Interpreter
         }
 
         int size = Convert.ToInt32(EvaluateExpression(functionCall.Arguments[0]));
-
-        return brushSize == size ? 1 : 0;
+        return BrushSize == size ? 1 : 0;
     }
 
-    private int IsCanvasColor(FunctionCall functionCall)
+    protected int IsCanvasColor(FunctionCall functionCall)
     {
         if (functionCall.Arguments.Count != 3)
         {
@@ -886,15 +989,14 @@ public class Interpreter
         int vertical = Convert.ToInt32(EvaluateExpression(functionCall.Arguments[1]));
         int horizontal = Convert.ToInt32(EvaluateExpression(functionCall.Arguments[2]));
 
-        // Verificar que el color sea válido
         if (!IsValidColor(color))
         {
             throw new Exception($"Color no válido: {color}");
         }
 
         // Calcular la posición a verificar
-        int x = currentX + horizontal;
-        int y = currentY + vertical;
+        int x = CurrentX + horizontal;
+        int y = CurrentY + vertical;
 
         // Verificar que esté dentro del canvas
         if (x < 0 || x >= canvasSize || y < 0 || y >= canvasSize)
@@ -904,12 +1006,52 @@ public class Interpreter
 
         return canvas[y, x] == color ? 1 : 0;
     }
+
+    #endregion
+
+    #region Métodos auxiliares
+
+    protected bool IsValidColor(string color)
+    {
+        string[] validColors = {
+            "Red", "Blue", "Green", "Yellow",
+            "Orange", "Purple", "Black", "White", "Transparent"
+        };
+
+        return Array.Exists(validColors, c => c == color);
+    }
+
+    protected void ValidateDirection(int dirX, int dirY, string instruction)
+    {
+        if (dirX < -1 || dirX > 1 || dirY < -1 || dirY > 1)
+        {
+            throw new Exception($"Las direcciones para {instruction} deben ser -1, 0 o 1");
+        }
+
+        if (dirX == 0 && dirY == 0)
+        {
+            throw new Exception($"La dirección para {instruction} no puede ser (0, 0)");
+        }
+    }
+
+    #endregion
 }
+
+public class ExecutionContext
+{
+    public List<Statement> Statements { get; set; }
+    public int CurrentIndex { get; set; }
+    public string Label { get; set; }
+    public Dictionary<string, int> LabelIndexes { get; set; } = new Dictionary<string, int>();
+}
+
 
 public class ExecutionResult
 {
-    public List<PixelData> PixelData { get; set; }
-    public string ConsoleOutput { get; set; }
+    public List<PixelData> PixelData { get; set; } = new List<PixelData>();
+    public string ConsoleOutput { get; set; } = "";
+    public string ErrorMessage { get; set; } = "";
+    public bool IsSuccess => string.IsNullOrEmpty(ErrorMessage);
 }
 
 public class PixelData
@@ -917,4 +1059,23 @@ public class PixelData
     public int X { get; set; }
     public int Y { get; set; }
     public string Color { get; set; }
+
+    public override string ToString()
+    {
+        return $"Pixel({X}, {Y}, {Color})";
+    }
+
+    public override bool Equals(object obj)
+    {
+        if (obj is PixelData other)
+        {
+            return X == other.X && Y == other.Y && Color == other.Color;
+        }
+        return false;
+    }
+
+    public override int GetHashCode()
+    {
+        return HashCode.Combine(X, Y, Color);
+    }
 }

@@ -1,4 +1,5 @@
 ﻿@page
+@using PixelWallE.Pages
 @model IndexModel
 @{
     ViewData["Title"] = "Pixel Wall-E";
@@ -13,33 +14,45 @@
                     <h3>Editor de Código</h3>
                 </div>
                 <div class="card-body p-0">
-                    <div id="code-editor-container">
-                        <div id="line-numbers"></div>
-                        <textarea id="code-editor" class="form-control" rows="20">@Model.Code</textarea>
+                    <div id="code-editor-wrapper">
+                        <div id="line-numbers-scroll">
+                            <div id="line-numbers"></div>
+                        </div>
+                        <div id="editor-scroll">
+                            <textarea id="code-editor" class="form-control" spellcheck="false">@Model.Code</textarea>
+                        </div>
                     </div>
                 </div>
                 <div class="card-footer">
                     <div class="row">
                         <div class="col">
-                            <form method="post" id="direct-form">
-                                <input type="hidden" name="code" id="code-hidden" value="@Model.Code" />
-                                <input type="hidden" name="canvasSize" id="canvas-size-hidden"
-                                    value="@Model.CanvasSize" />
-                                <button type="submit" class="btn btn-primary">Ejecutar (Directo)</button>
-                            </form>
+                            <button id="execute-ajax-btn" class="btn btn-primary">Ejecutar</button>
+                            <input type="hidden" name="code" id="code-hidden" value="@Model.Code" />
+                            <input type="hidden" name="canvasSize" id="canvas-size-hidden" value="@Model.CanvasSize" />
                         </div>
                         <div class="col">
-                            <button id="execute-ajax-btn" class="btn btn-success">Ejecutar (AJAX)</button>
                             <button id="load-btn" class="btn btn-secondary">Cargar</button>
                             <button id="save-btn" class="btn btn-secondary">Guardar</button>
+                        </div>
+                    </div>
+                    <!-- Controles de depuración -->
+                    <div class="row mt-2">
+                        <div class="col">
+                            <div class="btn-group" role="group" aria-label="Controles de depuración">
+                                <button id="debug-btn" class="btn btn-info">Iniciar Depuración</button>
+                                <button id="step-btn" class="btn btn-outline-info" disabled>Paso a Paso</button>
+                                <button id="continue-btn" class="btn btn-outline-info" disabled>Continuar</button>
+                                <button id="stop-btn" class="btn btn-outline-danger" disabled>Detener</button>
+                            </div>
                         </div>
                     </div>
                 </div>
             </div>
 
             <div class="card">
-                <div class="card-header bg-secondary text-white">
+                <div class="card-header bg-secondary text-white d-flex justify-content-between">
                     <h3>Consola</h3>
+                    <button id="clear-console-btn" class="btn btn-sm btn-light">Limpiar Consola</button>
                 </div>
                 <div class="card-body">
                     <pre id="console" class="console p-3 bg-dark text-light">@Model.ConsoleOutput</pre>
@@ -51,16 +64,51 @@
             <div class="card">
                 <div class="card-header bg-info text-white d-flex justify-content-between align-items-center">
                     <h3>Canvas</h3>
-                    <div class="input-group" style="width: 200px;">
+                    <div class="btn-group" style="width: 280px;">
                         <input type="number" id="canvas-size" class="form-control" value="@Model.CanvasSize" min="10"
                             max="500" />
                         <button id="resize-btn" class="btn btn-light">Redimensionar</button>
+                        <button id="clear-canvas-btn" class="btn btn-danger">Limpiar Canvas</button>
                     </div>
                 </div>
                 <div class="card-body p-0">
-                    <div id="canvas-container" class="p-3 text-center">
+                    <div id="canvas-container" class="p-3 text-center position-relative">
                         <canvas id="pixel-canvas" width="@Model.CanvasSize" height="@Model.CanvasSize"></canvas>
+                        <!-- Wall-E Icon -->
+                        <div id="wall-e-icon" class="position-absolute"
+                            style="display: none; width: 20px; height: 20px; transform: translate(-50%, -50%);">
+                            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <rect x="4" y="6" width="16" height="12" rx="2" fill="#FFA500" />
+                                <rect x="6" y="8" width="4" height="4" rx="1" fill="#000" />
+                                <rect x="14" y="8" width="4" height="4" rx="1" fill="#000" />
+                                <rect x="8" y="14" width="8" height="2" rx="1" fill="#000" />
+                                <rect x="1" y="9" width="3" height="6" fill="#A0A0A0" />
+                                <rect x="20" y="9" width="3" height="6" fill="#A0A0A0" />
+                                <circle cx="8" cy="10" r="1" fill="#FFF" />
+                                <circle cx="16" cy="10" r="1" fill="#FFF" />
+                            </svg>
+                        </div>
                     </div>
+                </div>
+            </div>
+
+            <!-- Variables Panel (visible solo en modo depuración) -->
+            <div id="variables-panel" class="card mt-3" style="display: none;">
+                <div class="card-header bg-primary text-white">
+                    <h3>Variables</h3>
+                </div>
+                <div class="card-body">
+                    <table class="table table-sm">
+                        <thead>
+                            <tr>
+                                <th>Nombre</th>
+                                <th>Valor</th>
+                            </tr>
+                        </thead>
+                        <tbody id="variables-table-body">
+                            <!-- Las variables se cargarán dinámicamente aquí -->
+                        </tbody>
+                    </table>
                 </div>
             </div>
         </div>
@@ -75,6 +123,11 @@
         const initialPixelData = @Html.Raw(pixelDataJson);
         const canvasSize = @Model.CanvasSize;
 
+        // Variables para el modo de depuración
+        let isDebugging = false;
+        let currentLine = 0;
+        let debuggingVariables = {};
+
         // Al cargar la página
         document.addEventListener('DOMContentLoaded', function () {
             // Inicializar el canvas
@@ -86,28 +139,8 @@
                 updateCanvasFixed(initialPixelData, canvasSize);
             }
 
-            // Actualizar los números de línea
-            updateLineNumbers();
-
-            // Configurar el editor
-            const editor = document.getElementById('code-editor');
-            editor.addEventListener('input', function () {
-                updateLineNumbers();
-                document.getElementById('code-hidden').value = this.value;
-            });
-
-            // Manejar el tabulador
-            editor.addEventListener('keydown', function (e) {
-                if (e.key === 'Tab') {
-                    e.preventDefault();
-                    const start = this.selectionStart;
-                    const end = this.selectionEnd;
-
-                    this.value = this.value.substring(0, start) + '    ' + this.value.substring(end);
-                    this.selectionStart = this.selectionEnd = start + 4;
-                    updateLineNumbers();
-                }
-            });
+            // Inicializar el editor
+            initializeEditor();
 
             // Configurar el tamaño del canvas
             const canvasSizeInput = document.getElementById('canvas-size');
@@ -115,49 +148,181 @@
                 document.getElementById('canvas-size-hidden').value = this.value;
             });
 
-            // Configurar el botón AJAX
-            document.getElementById('execute-ajax-btn').addEventListener('click', executeAjaxFixed);
+            // Configurar los botones
+            document.getElementById('execute-ajax-btn').addEventListener('click', function (e) {
+                e.preventDefault();
+                executeAjaxFixed();
+            });
+            document.getElementById('resize-btn').addEventListener('click', function (e) {
+                e.preventDefault();
+                resizeCanvasFixed();
+            });
+            document.getElementById('clear-canvas-btn').addEventListener('click', function (e) {
+                e.preventDefault();
+                clearCanvas();
+            });
+            document.getElementById('load-btn').addEventListener('click', function (e) {
+                e.preventDefault();
+                loadFile();
+            });
+            document.getElementById('save-btn').addEventListener('click', function (e) {
+                e.preventDefault();
+                saveFile();
+            });
+            document.getElementById('clear-console-btn').addEventListener('click', function (e) {
+                e.preventDefault();
+                clearConsole();
+            });
 
-            // Configurar el botón de redimensionamiento
-            document.getElementById('resize-btn').addEventListener('click', resizeCanvasFixed);
-
-            // Configurar los botones de carga y guardado
-            document.getElementById('load-btn').addEventListener('click', loadFile);
-            document.getElementById('save-btn').addEventListener('click', saveFile);
+            // Configurar los botones de depuración
+            document.getElementById('debug-btn').addEventListener('click', function (e) {
+                e.preventDefault();
+                startDebugging();
+            });
+            document.getElementById('step-btn').addEventListener('click', function (e) {
+                e.preventDefault();
+                stepDebug();
+            });
+            document.getElementById('continue-btn').addEventListener('click', function (e) {
+                e.preventDefault();
+                continueDebug();
+            });
+            document.getElementById('stop-btn').addEventListener('click', function (e) {
+                e.preventDefault();
+                stopDebugging();
+            });
         });
 
-        // Función para actualizar los números de línea
-        function updateLineNumbers() {
+        // Función corregida para inicializar el editor con scroll sincronizado
+        function initializeEditor() {
             const editor = document.getElementById('code-editor');
-            const lineNumbers = document.getElementById('line-numbers');
-            const lines = editor.value.split('\n');
+            const lineNumbersDiv = document.getElementById('line-numbers');
+            const editorWrapper = document.getElementById('code-editor-wrapper');
 
-            // Crear contenido HTML para números de línea
-            let html = '';
-            for (let i = 0; i < lines.length; i++) {
-                html += `<div class="line-number">${i + 1}</div>`;
-            }
-            lineNumbers.innerHTML = html;
+            // Actualizar números de línea inicial
+            updateLineNumbers();
 
-            // Sincronizar scroll
-            lineNumbers.scrollTop = editor.scrollTop;
+            // Manejar entrada del editor
+            editor.addEventListener('input', function () {
+                updateLineNumbers();
+                document.getElementById('code-hidden').value = this.value;
+
+                // Ajustar altura automática
+                adjustEditorHeight();
+            });
+
+            // Manejar tecla Tab
+            editor.addEventListener('keydown', function (e) {
+                if (e.key === 'Tab') {
+                    e.preventDefault();
+                    const start = this.selectionStart;
+                    const end = this.selectionEnd;
+
+                    // Insertar 4 espacios
+                    this.value = this.value.substring(0, start) + '    ' + this.value.substring(end);
+                    this.selectionStart = this.selectionEnd = start + 4;
+
+                    updateLineNumbers();
+                    adjustEditorHeight();
+                }
+            });
+
+            // Ajustar altura inicial
+            adjustEditorHeight();
         }
 
-        // Agregar un manejador de scroll para mantener sincronizados los números de línea
-        document.getElementById('code-editor').addEventListener('scroll', function () {
-            document.getElementById('line-numbers').scrollTop = this.scrollTop;
-        });
+        // Nueva función para ajustar altura
+        function adjustEditorHeight() {
+            const editor = document.getElementById('code-editor');
+            const lineNumbersDiv = document.getElementById('line-numbers');
 
-        // Función para inicializar el canvas - CORREGIDA
-        function initCanvas(size) {
+            // Calcular altura necesaria basada en número de líneas
+            const lines = editor.value.split('\n');
+            const lineHeight = 21; // altura de cada línea
+            const minHeight = 500;
+            const calculatedHeight = Math.max(minHeight, lines.length * lineHeight + 24); // +24 para padding
+
+            // Aplicar la misma altura a ambos elementos
+            editor.style.height = calculatedHeight + 'px';
+            lineNumbersDiv.style.height = calculatedHeight + 'px';
+        }
+
+        // Función mejorada para actualizar números de línea
+        function updateLineNumbers() {
+            const editor = document.getElementById('code-editor');
+            const lineNumbersDiv = document.getElementById('line-numbers');
+            const lines = editor.value.split('\n');
+
+            // Si no hay contenido, mostrar al menos una línea
+            const lineCount = lines.length || 1;
+
+            // Generar HTML para todos los números de línea
+            let numbersHTML = '';
+            for (let i = 1; i <= lineCount; i++) {
+                numbersHTML += `<div class="line-number" data-line-number="${i}">${i}</div>`;
+            }
+
+            lineNumbersDiv.innerHTML = numbersHTML;
+        }
+
+        // Función para resaltar la línea actual (para depuración)
+        function highlightCurrentLine(lineNumber) {
+            const lineNumbers = document.querySelectorAll('.line-number');
+
+            lineNumbers.forEach((ln) => {
+                ln.classList.remove('current-line', 'error-line');
+                const lineNum = parseInt(ln.dataset.lineNumber);
+                if (lineNum === lineNumber) {
+                    ln.classList.add('current-line');
+                }
+            });
+
+            // Hacer scroll solo dentro del editor, no en toda la página
+            const lineElement = document.querySelector(`.line-number[data-line-number="${lineNumber}"]`);
+            if (lineElement) {
+                const editorWrapper = document.getElementById('code-editor-wrapper');
+
+                // Calcular la posición de la línea
+                const lineHeight = 21; // altura de cada línea en píxeles
+                const scrollPosition = (lineNumber - 1) * lineHeight;
+
+                // Hacer scroll suave solo en el editor wrapper
+                editorWrapper.scrollTop = scrollPosition - (editorWrapper.clientHeight / 2) + lineHeight;
+            }
+        }
+
+        // Función para resaltar línea con error
+        function highlightErrorLine(lineNumber) {
+            const lineNumbers = document.querySelectorAll('.line-number');
+
+            lineNumbers.forEach((ln) => {
+                const lineNum = parseInt(ln.dataset.lineNumber);
+                if (lineNum === lineNumber) {
+                    ln.classList.add('error-line');
+                }
+            });
+
+            // Hacer scroll solo dentro del editor
+            const lineElement = document.querySelector(`.line-number[data-line-number="${lineNumber}"]`);
+            if (lineElement) {
+                const editorWrapper = document.getElementById('code-editor-wrapper');
+
+                // Calcular la posición de la línea
+                const lineHeight = 21;
+                const scrollPosition = (lineNumber - 1) * lineHeight;
+
+                // Hacer scroll suave solo en el editor wrapper
+                editorWrapper.scrollTop = scrollPosition - (editorWrapper.clientHeight / 2) + lineHeight;
+            }
+        }
+
+        // Función para limpiar el canvas
+        function clearCanvas() {
             const canvas = document.getElementById('pixel-canvas');
             const ctx = canvas.getContext('2d');
+            const size = parseInt(document.getElementById('canvas-size').value);
 
-            // Asegurarse de que el tamaño sea correcto
-            canvas.width = size;
-            canvas.height = size;
-
-            // Limpiar y dibujar fondo blanco
+            // Limpiar canvas y dibujar fondo blanco
             ctx.fillStyle = 'white';
             ctx.fillRect(0, 0, size, size);
 
@@ -180,11 +345,233 @@
                 ctx.lineTo(i, size);
                 ctx.stroke();
             }
+
+            // Ocultar el icono Wall-E
+            document.getElementById('wall-e-icon').style.display = 'none';
+
+            // Agregar mensaje a la consola
+            const consoleOutput = document.getElementById('console');
+            consoleOutput.innerHTML += '\nCanvas limpiado.';
         }
 
-        // Función para actualizar el canvas con píxeles - CORREGIDA
-        function updateCanvasFixed(pixelData, size) {
-            // Primero inicializar el canvas
+        // Función para limpiar la consola
+        function clearConsole() {
+            document.getElementById('console').innerHTML = '';
+        }
+
+        // Funciones de depuración
+        function startDebugging() {
+            const code = document.getElementById('code-editor').value;
+            const canvasSize = parseInt(document.getElementById('canvas-size').value);
+            const consoleOutput = document.getElementById('console');
+
+            // Limpiar la consola
+            consoleOutput.innerHTML = 'Iniciando depuración...\n';
+
+            // Activar modo de depuración
+            isDebugging = true;
+
+            // Cambiar estado de los botones
+            toggleDebugButtons(true);
+
+            // Solicitar inicio de depuración al servidor
+            fetch(`/Index?handler=StartDebug&code=${encodeURIComponent(code)}&canvasSize=${canvasSize}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        currentLine = data.nextLine;
+                        highlightCurrentLine(currentLine);
+                        updateCanvasFixed(data.pixelData, canvasSize, data.wallePosition);
+                        debuggingVariables = data.variables;
+                        updateVariablesPanel();
+                        document.getElementById('variables-panel').style.display = 'block';
+                        consoleOutput.innerHTML += 'Depuración iniciada. Utilice "Paso a Paso" para avanzar.\n';
+                    } else {
+                        consoleOutput.innerHTML += `Error al iniciar depuración: ${data.error}\n`;
+                        stopDebugging();
+                    }
+                })
+                .catch(error => {
+                    consoleOutput.innerHTML += `Error: ${error.message}\n`;
+                    stopDebugging();
+                });
+
+            // Prevenir que la página haga scroll
+            return false;
+        }
+
+        function stepDebug() {
+            if (!isDebugging) return;
+
+            const consoleOutput = document.getElementById('console');
+            const canvasSize = parseInt(document.getElementById('canvas-size').value);
+
+            consoleOutput.innerHTML += 'Ejecutando paso...\n';
+
+            fetch(`/Index?handler=StepDebug`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        currentLine = data.nextLine;
+                        highlightCurrentLine(currentLine);
+                        updateCanvasFixed(data.pixelData, canvasSize, data.wallePosition);
+                        debuggingVariables = data.variables;
+                        updateVariablesPanel();
+
+                        if (data.logMessage) {
+                            consoleOutput.innerHTML += `${data.logMessage}\n`;
+                        }
+
+                        if (data.finished) {
+                            consoleOutput.innerHTML += 'Depuración completada.\n';
+                            stopDebugging();
+                        }
+                    } else {
+                        consoleOutput.innerHTML += `Error: ${data.error}\n`;
+
+                        if (data.variables) {
+                            debuggingVariables = data.variables;
+                            updateVariablesPanel();
+                        }
+
+                        if (data.pixelData) {
+                            updateCanvasFixed(data.pixelData, canvasSize, data.wallePosition);
+                        }
+
+                        if (data.errorLine) {
+                            highlightErrorLine(data.errorLine);
+                        }
+                    }
+                })
+                .catch(error => {
+                    consoleOutput.innerHTML += `Error: ${error.message}\n`;
+                });
+        }
+
+        function continueDebug() {
+            if (!isDebugging) return;
+
+            const consoleOutput = document.getElementById('console');
+            const canvasSize = parseInt(document.getElementById('canvas-size').value);
+
+            consoleOutput.innerHTML += 'Continuando ejecución hasta el final o error...\n';
+
+            fetch(`/Index?handler=ContinueDebug`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        updateCanvasFixed(data.pixelData, canvasSize, data.wallePosition);
+                        debuggingVariables = data.variables;
+                        updateVariablesPanel();
+                        consoleOutput.innerHTML += 'Ejecución completada.\n';
+                    } else {
+                        consoleOutput.innerHTML += `Error: ${data.error}\n`;
+
+                        if (data.variables) {
+                            debuggingVariables = data.variables;
+                            updateVariablesPanel();
+                        }
+
+                        if (data.pixelData) {
+                            updateCanvasFixed(data.pixelData, canvasSize, data.wallePosition);
+                        }
+
+                        if (data.errorLine) {
+                            highlightErrorLine(data.errorLine);
+                        }
+                    }
+
+                    stopDebugging();
+                })
+                .catch(error => {
+                    consoleOutput.innerHTML += `Error: ${error.message}\n`;
+                    stopDebugging();
+                });
+        }
+
+        function stopDebugging() {
+            if (!isDebugging) return;
+
+            fetch(`/Index?handler=StopDebug`)
+                .then(response => response.json())
+                .then(data => {
+                    isDebugging = false;
+                    toggleDebugButtons(false);
+                    document.getElementById('variables-panel').style.display = 'none';
+                    updateLineNumbers();
+                    const consoleOutput = document.getElementById('console');
+                    consoleOutput.innerHTML += 'Depuración detenida.\n';
+                })
+                .catch(error => {
+                    console.error("Error al detener depuración:", error);
+                    isDebugging = false;
+                    toggleDebugButtons(false);
+                });
+        }
+
+        function toggleDebugButtons(debugging) {
+            document.getElementById('debug-btn').disabled = debugging;
+            document.getElementById('step-btn').disabled = !debugging;
+            document.getElementById('continue-btn').disabled = !debugging;
+            document.getElementById('stop-btn').disabled = !debugging;
+
+            document.getElementById('execute-ajax-btn').disabled = debugging;
+            document.getElementById('load-btn').disabled = debugging;
+            document.getElementById('save-btn').disabled = debugging;
+        }
+
+        function updateVariablesPanel() {
+            const tableBody = document.getElementById('variables-table-body');
+            tableBody.innerHTML = '';
+
+            for (const [name, value] of Object.entries(debuggingVariables)) {
+                const row = document.createElement('tr');
+                const nameCell = document.createElement('td');
+                const valueCell = document.createElement('td');
+
+                nameCell.textContent = name;
+                valueCell.textContent = value;
+
+                row.appendChild(nameCell);
+                row.appendChild(valueCell);
+                tableBody.appendChild(row);
+            }
+        }
+
+        // Función para inicializar el canvas
+        function initCanvas(size) {
+            const canvas = document.getElementById('pixel-canvas');
+            const ctx = canvas.getContext('2d');
+
+            canvas.width = size;
+            canvas.height = size;
+
+            ctx.fillStyle = 'white';
+            ctx.fillRect(0, 0, size, size);
+
+            // Dibujar cuadrícula
+            ctx.strokeStyle = '#eee';
+            ctx.lineWidth = 0.5;
+
+            for (let i = 0; i <= size; i += 10) {
+                ctx.beginPath();
+                ctx.moveTo(0, i);
+                ctx.lineTo(size, i);
+                ctx.stroke();
+            }
+
+            for (let i = 0; i <= size; i += 10) {
+                ctx.beginPath();
+                ctx.moveTo(i, 0);
+                ctx.lineTo(i, size);
+                ctx.stroke();
+            }
+
+            document.getElementById('wall-e-icon').style.display = 'none';
+        }
+
+        // Función para actualizar el canvas con píxeles
+        function updateCanvasFixed(pixelData, size, wallePosition = null) {
             initCanvas(size);
 
             const canvas = document.getElementById('pixel-canvas');
@@ -192,7 +579,6 @@
 
             console.log(`Actualizando canvas con ${pixelData.length} píxeles`);
 
-            // Agrupar píxeles por color para optimizar
             const colorGroups = {};
 
             for (const pixel of pixelData) {
@@ -202,12 +588,25 @@
                 colorGroups[pixel.color].push({ x: pixel.x, y: pixel.y });
             }
 
-            // Dibujar píxeles por grupos de color
             for (const color in colorGroups) {
                 ctx.fillStyle = getColorValue(color);
                 for (const pixel of colorGroups[color]) {
                     ctx.fillRect(pixel.x, pixel.y, 1, 1);
                 }
+            }
+
+            const walleIcon = document.getElementById('wall-e-icon');
+
+            if (wallePosition) {
+                const canvasRect = canvas.getBoundingClientRect();
+                const containerRect = canvas.parentElement.getBoundingClientRect();
+
+                walleIcon.style.display = 'block';
+                walleIcon.style.left = `${(wallePosition.x / size) * canvasRect.width + canvasRect.left - containerRect.left}px`;
+                walleIcon.style.top = `${(wallePosition.y / size) * canvasRect.height + canvasRect.top - containerRect.top}px`;
+                walleIcon.dataset.size = wallePosition.size;
+            } else {
+                walleIcon.style.display = 'none';
             }
         }
 
@@ -228,24 +627,31 @@
             return colorMap[colorName] || colorName;
         }
 
-        // Función para ejecutar con AJAX - CORREGIDA
+        // Función para ejecutar con AJAX
         function executeAjaxFixed() {
             const code = document.getElementById('code-editor').value;
             const canvasSize = parseInt(document.getElementById('canvas-size').value);
             const consoleOutput = document.getElementById('console');
 
-            // Limpiar la consola
+            // Guardar posición actual del scroll
+            const currentScrollY = window.scrollY;
+
             consoleOutput.innerHTML = 'Ejecutando...';
 
             console.log('Enviando código:', code);
             console.log('Tamaño del canvas:', canvasSize);
 
-            // Usar una URL codificada correctamente
             const url = `/Index?handler=ExecuteAjax&code=${encodeURIComponent(code)}&canvasSize=${canvasSize}`;
             console.log('URL de solicitud:', url);
 
-            fetch(url)
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 60000);
+
+            fetch(url, {
+                signal: controller.signal
+            })
                 .then(response => {
+                    clearTimeout(timeoutId);
                     if (!response.ok) {
                         throw new Error(`Error HTTP: ${response.status} - ${response.statusText}`);
                     }
@@ -261,19 +667,41 @@
                             console.log('Primer píxel:', data.pixelData[0]);
                         }
 
-                        updateCanvasFixed(data.pixelData, canvasSize);
+                        updateCanvasFixed(data.pixelData, canvasSize, data.wallePosition);
                         consoleOutput.innerHTML = data.consoleOutput || 'Ejecución completada con éxito.';
                     } else {
-                        consoleOutput.innerHTML = 'Error: ' + data.error;
+                        // Mostrar píxeles hasta donde se ejecutó
+                        if (data.pixelData && data.pixelData.length > 0) {
+                            updateCanvasFixed(data.pixelData, canvasSize, data.wallePosition);
+                        }
+                        consoleOutput.innerHTML = 'Error: ' + data.error + '\n\n' + (data.consoleOutput || '');
+
+                        // Resaltar línea con error si está disponible
+                        const lineMatch = data.error.match(/línea\s+(\d+)/i);
+                        if (lineMatch) {
+                            const errorLine = parseInt(lineMatch[1]);
+                            highlightErrorLine(errorLine);
+                        }
                     }
+
+                    // Restaurar posición del scroll
+                    window.scrollTo(0, currentScrollY);
                 })
                 .catch(error => {
-                    consoleOutput.innerHTML = 'Error: ' + error.message;
+                    clearTimeout(timeoutId);
+                    if (error.name === 'AbortError') {
+                        consoleOutput.innerHTML = 'Error: La operación tardó demasiado tiempo.';
+                    } else {
+                        consoleOutput.innerHTML = 'Error: ' + error.message;
+                    }
                     console.error("Error en la solicitud:", error);
+
+                    // Restaurar posición del scroll
+                    window.scrollTo(0, currentScrollY);
                 });
         }
 
-        // Función para redimensionar el canvas - CORREGIDA
+        // Función para redimensionar el canvas
         function resizeCanvasFixed() {
             const size = parseInt(document.getElementById('canvas-size').value);
             if (size < 10 || size > 500) {
@@ -300,14 +728,21 @@
             const reader = new FileReader();
             reader.onload = function (e) {
                 const content = e.target.result;
-                document.getElementById('code-editor').value = content;
+                const editor = document.getElementById('code-editor');
+                editor.value = content;
                 document.getElementById('code-hidden').value = content;
+
+                // Actualizar números de línea y altura
                 updateLineNumbers();
+                adjustEditorHeight();
 
                 const consoleOutput = document.getElementById('console');
                 consoleOutput.innerHTML += `\nArchivo cargado: ${file.name}`;
             };
             reader.readAsText(file);
+
+            // Limpiar el input para permitir cargar el mismo archivo nuevamente
+            this.value = '';
         });
 
         function saveFile() {
@@ -328,52 +763,133 @@
     </script>
 
     <style>
-        #code-editor-container {
+        /* Estilos corregidos para el editor con scroll sincronizado */
+        #code-editor-wrapper {
             position: relative;
-            border: 1px solid #ccc;
-            height: 400px;
-            overflow: hiden;
+            display: flex;
+            height: 500px;
+            max-height: 600px;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            font-size: 14px;
+            line-height: 21px;
+            border: 1px solid #dee2e6;
+            overflow-y: auto;
+            /* UN SOLO SCROLL para todo el contenedor */
+            overflow-x: hidden;
+            scroll-behavior: smooth;
+        }
+
+        #line-numbers-scroll {
+            width: 60px;
+            overflow: hidden;
+            /* SIN scroll individual */
+            background: linear-gradient(to right, #e9ecef, #f1f3f4);
+            border-right: 2px solid #dee2e6;
+            flex-shrink: 0;
+            /* No se encoge */
         }
 
         #line-numbers {
-            position: absolute;
-            left: 0;
-            top: 0;
-            width: 40px;
-            height: 100%;
-            background-color: #f5f5f5;
-            overflow-y: hidden;
-            border-right: 1px solid #ddd;
+            padding: 12px 8px;
+            color: #6c757d;
             text-align: right;
-            padding: 10px 5px 10px 0;
-            font-family: monospace;
             user-select: none;
-            color: #999;
+            min-height: 100%;
             box-sizing: border-box;
         }
 
         .line-number {
-            height: 20px;
-            /* Altura fija para cada número de línea */
-            line-height: 20px;
-            /* Alinear verticalmente */
-            padding-right: 5px;
+            height: 21px;
+            line-height: 21px;
+            padding-right: 8px;
+            transition: all 0.2s ease;
+            position: relative;
+            font-size: 14px;
+            box-sizing: border-box;
+            white-space: nowrap;
+        }
+
+        .line-number:hover {
+            background-color: rgba(0, 123, 255, 0.1);
+        }
+
+        .line-number.current-line {
+            background-color: #fff3cd;
+            color: #856404;
+            font-weight: bold;
+        }
+
+        .line-number.current-line::before {
+            content: '▶';
+            position: absolute;
+            left: 2px;
+            color: #ffc107;
+        }
+
+        .line-number.error-line {
+            background-color: #f8d7da;
+            color: #721c24;
+            font-weight: bold;
+        }
+
+        .line-number.error-line::before {
+            content: '✖';
+            position: absolute;
+            left: 2px;
+            color: #dc3545;
+        }
+
+        #editor-scroll {
+            flex: 1;
+            overflow: hidden;
+            /* SIN scroll individual */
+            background-color: #ffffff;
         }
 
         #code-editor {
-            margin-left: 40px;
-            width: calc(100% - 40px);
+            width: 100%;
             height: 100%;
+            /* Altura completa del contenedor padre */
             border: none;
             resize: none;
-            font-family: monospace;
-            padding: 10px;
-            line-height: 1.5;
-            line-height: 20px;
-            /* Mismo line-height que los números */
-            overflow-y: auto;
+            padding: 12px 16px;
+            background-color: #ffffff;
+            color: #212529;
+            outline: none;
+            white-space: pre;
+            tab-size: 4;
+            -moz-tab-size: 4;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            font-size: 14px;
+            line-height: 21px;
+            box-sizing: border-box;
+            overflow: hidden;
+            /* SIN scroll propio */
         }
 
+        #code-editor:focus {
+            background-color: #fafafa;
+        }
+
+        /* Scrollbar para el contenedor principal */
+        #code-editor-wrapper::-webkit-scrollbar {
+            width: 12px;
+        }
+
+        #code-editor-wrapper::-webkit-scrollbar-track {
+            background: #f1f1f1;
+        }
+
+        #code-editor-wrapper::-webkit-scrollbar-thumb {
+            background: #c1c1c1;
+            border-radius: 6px;
+        }
+
+        #code-editor-wrapper::-webkit-scrollbar-thumb:hover {
+            background: #a8a8a8;
+        }
+
+        /* Canvas styles */
         #canvas-container {
             min-height: 400px;
             display: flex;
@@ -389,6 +905,7 @@
             box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
         }
 
+        /* Console styles */
         .console {
             height: 200px;
             overflow-y: auto;
@@ -397,6 +914,66 @@
             line-height: 1.5;
             white-space: pre-wrap;
             margin: 0;
+        }
+
+        /* Wall-E icon */
+        #wall-e-icon {
+            transition: all 0.3s ease;
+            z-index: 10;
+        }
+
+        /* Botones de depuración */
+        .btn-group .btn {
+            margin-right: 5px;
+        }
+
+        .btn-group .btn:last-child {
+            margin-right: 0;
+        }
+
+        /* Variables panel */
+        #variables-panel .table {
+            margin-bottom: 0;
+        }
+
+        #variables-panel .table th,
+        #variables-panel .table td {
+            padding: 0.5rem;
+            vertical-align: middle;
+        }
+
+        /* Responsive design */
+        @@media (max-width: 768px) {
+            #code-editor-wrapper {
+                height: 300px;
+            }
+
+            .btn-group {
+                flex-wrap: wrap;
+            }
+
+            .btn-group .btn {
+                margin-bottom: 5px;
+            }
+        }
+
+        /* Mejoras de accesibilidad */
+        .btn:focus {
+            box-shadow: 0 0 0 0.2rem rgba(0, 123, 255, 0.25);
+        }
+
+        .card-header h3 {
+            margin: 0;
+            font-size: 1.25rem;
+        }
+
+        /* Animaciones suaves */
+        .card {
+            transition: box-shadow 0.15s ease-in-out;
+        }
+
+        .card:hover {
+            box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.15);
         }
     </style>
 }

@@ -84,7 +84,7 @@ namespace PixelWallE.Services
                 var executionResult = interpreter.Execute();
 
                 consoleOutput.AppendLine("Ejecución completada correctamente.");
-                consoleOutput.AppendLine($"Se generaron {executionResult.PixelData.Count} píxeles.");
+                consoleOutput.AppendLine($"Se generaron {executionResult.PixelData?.Count ?? 0} píxeles.");
 
                 if (!string.IsNullOrEmpty(executionResult.ConsoleOutput))
                 {
@@ -93,7 +93,7 @@ namespace PixelWallE.Services
                 }
 
                 result.IsSuccess = true;
-                result.PixelData = executionResult.PixelData;
+                result.PixelData = executionResult.PixelData ?? new List<PixelData>();
                 result.ConsoleOutput = consoleOutput.ToString();
                 return result;
             }
@@ -116,8 +116,8 @@ namespace PixelWallE.Services
     public class CompilerResult
     {
         public bool IsSuccess { get; set; }
-        public string Error { get; set; }
+        public string Error { get; set; } = "";
         public List<PixelData> PixelData { get; set; } = new List<PixelData>();
-        public string ConsoleOutput { get; set; }
+        public string ConsoleOutput { get; set; } = "";
     }
 }

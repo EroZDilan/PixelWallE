@@ -7,6 +7,8 @@ public class SemanticAnalyzer
     private Dictionary<string, ExpressionNode> variables;
     private Dictionary<string, LabelNode> labels;
     private int canvasSize;
+    private bool hasSpawn = false;  // Para verificar que solo haya un Spawn
+    private int spawnCount = 0;      // Contador de Spawns encontrados
 
     public string Error { get; private set; }
 
@@ -37,7 +39,21 @@ public class SemanticAnalyzer
                 return false;
             }
 
-            // Primer paso: recolectar todas las etiquetas
+            // Primer paso: contar todos los Spawns en el programa completo
+            CountSpawns(ast.Statements);
+
+            if (spawnCount == 0)
+            {
+                Error = "Error semántico: El programa debe contener exactamente una instrucción Spawn.";
+                return false;
+            }
+            else if (spawnCount > 1)
+            {
+                Error = $"Error semántico: El programa debe contener exactamente una instrucción Spawn, pero se encontraron {spawnCount}.";
+                return false;
+            }
+
+            // Segundo paso: recolectar todas las etiquetas
             CollectLabels(ast.Statements);
 
             if (!string.IsNullOrEmpty(Error))
@@ -45,10 +61,11 @@ public class SemanticAnalyzer
                 return false;
             }
 
-            // Segundo paso: verificar que el programa empiece con una instrucción Spawn
+            // Tercer paso: verificar que el programa empiece con Spawn
             if (ast.Statements.Count > 0 && ast.Statements[0] is Instruction instruction && instruction.Name == "Spawn")
             {
                 AnalyzeSpawnInstruction(instruction);
+                hasSpawn = true;
             }
             else
             {
@@ -61,7 +78,7 @@ public class SemanticAnalyzer
                 return false;
             }
 
-            // Tercer paso: verificar la semántica de cada statement
+            // Cuarto paso: verificar la semántica de cada statement
             for (int i = 1; i < ast.Statements.Count; i++)
             {
                 if (ast.Statements[i] == null)
@@ -84,6 +101,29 @@ public class SemanticAnalyzer
         {
             Error = $"Error semántico: {ex.Message}";
             return false;
+        }
+    }
+
+    private void CountSpawns(List<Statement> statements)
+    {
+        if (statements == null) return;
+
+        foreach (var statement in statements)
+        {
+            if (statement == null) continue;
+
+            if (statement is Instruction instruction && instruction.Name == "Spawn")
+            {
+                spawnCount++;
+            }
+            else if (statement is LabelNode labelNode)
+            {
+                // Contar Spawns dentro de las etiquetas
+                if (labelNode.Programa?.Statements != null)
+                {
+                    CountSpawns(labelNode.Programa.Statements);
+                }
+            }
         }
     }
 
@@ -254,6 +294,13 @@ public class SemanticAnalyzer
         switch (instructionName)
         {
             case "Spawn":
+                // Ya verificamos que solo haya un Spawn en CountSpawns
+                // y que esté al principio en Analyze
+                if (!hasSpawn)
+                {
+                    Error = $"Error semántico: Spawn debe estar al principio del programa en línea {instruction.Line}, columna {instruction.Column}.";
+                    return;
+                }
                 AnalyzeSpawnInstruction(instruction);
                 break;
 
@@ -335,10 +382,13 @@ public class SemanticAnalyzer
             return;
         }
 
-        if (!(x is ArithmeticExpression) || !(y is ArithmeticExpression))
+        if (!IsNumericExpression(x) || !IsNumericExpression(y))
         {
-            Error += $"Error semántico: Argumentos de Spawn deben ser expresiones numéricas en línea {instruction.Line}, columna {instruction.Column}.\n";
-            return;
+            if (x is StringExpression || y is StringExpression)
+            {
+                Error += $"Error semántico: Argumentos de Spawn deben ser numéricos, no cadenas, en línea {instruction.Line}, columna {instruction.Column}.\n";
+                return;
+            }
         }
 
         // Opcionalmente, verificar que las coordenadas estén dentro del canvas si son constantes
@@ -402,7 +452,7 @@ public class SemanticAnalyzer
             return;
         }
 
-        string color = colorExpr.Value.Trim('"'); // Quitar comillas
+        string color = colorExpr.Value.Trim('"');
 
         if (!IsValidColor(color))
         {
@@ -462,10 +512,13 @@ public class SemanticAnalyzer
             return;
         }
 
-        if (!(sizeArg is ArithmeticExpression))
+        if (!IsNumericExpression(sizeArg))
         {
-            Error += $"Error semántico: Argumento de Size debe ser una expresión numérica en línea {instruction.Line}, columna {instruction.Column}.\n";
-            return;
+            if (sizeArg is StringExpression)
+            {
+                Error += $"Error semántico: Argumento de Size debe ser numérico, no cadena, en línea {instruction.Line}, columna {instruction.Column}.\n";
+                return;
+            }
         }
 
         // Verificar que el tamaño sea positivo si es una constante
@@ -528,7 +581,7 @@ public class SemanticAnalyzer
             return;
         }
 
-        if (!(dirX is ArithmeticExpression) || !(dirY is ArithmeticExpression) || !(distance is ArithmeticExpression))
+        if (!IsNumericExpression(dirX) || !IsNumericExpression(dirY) || !IsNumericExpression(distance))
         {
             Error += $"Error semántico: Argumentos de DrawLine deben ser expresiones numéricas en línea {instruction.Line}, columna {instruction.Column}.\n";
             return;
@@ -610,7 +663,7 @@ public class SemanticAnalyzer
             return;
         }
 
-        if (!(dirX is ArithmeticExpression) || !(dirY is ArithmeticExpression) || !(radius is ArithmeticExpression))
+        if (!IsNumericExpression(dirX) || !IsNumericExpression(dirY) || !IsNumericExpression(radius))
         {
             Error += $"Error semántico: Argumentos de DrawCircle deben ser expresiones numéricas en línea {instruction.Line}, columna {instruction.Column}.\n";
             return;
@@ -706,9 +759,9 @@ public class SemanticAnalyzer
             return;
         }
 
-        if (!(dirX is ArithmeticExpression) || !(dirY is ArithmeticExpression) ||
-            !(distance is ArithmeticExpression) || !(width is ArithmeticExpression) ||
-            !(height is ArithmeticExpression))
+        if (!IsNumericExpression(dirX) || !IsNumericExpression(dirY) ||
+            !IsNumericExpression(distance) || !IsNumericExpression(width) ||
+            !IsNumericExpression(height))
         {
             Error += $"Error semántico: Argumentos de DrawRectangle deben ser expresiones numéricas en línea {instruction.Line}, columna {instruction.Column}.\n";
             return;
@@ -812,7 +865,7 @@ public class SemanticAnalyzer
             return;
         }
 
-        string labelName = labelExpr.Value.Trim('"'); // Quitar comillas
+        string labelName = labelExpr.Value.Trim('"');
 
         // Verificar que la etiqueta exista
         if (!labels.ContainsKey(labelName))
@@ -829,10 +882,48 @@ public class SemanticAnalyzer
             return;
         }
 
-        if (!(condition is BooleanExpression))
+        if (!IsBooleanExpression(condition))
         {
             Error += $"Error semántico: El segundo argumento de GoTo debe ser una expresión booleana en línea {instruction.Line}, columna {instruction.Column}.\n";
         }
+    }
+
+    private bool IsNumericExpression(ExpressionNode expression)
+    {
+        if (expression is ArithmeticExpression)
+        {
+            return true;
+        }
+
+        if (expression is VariableNode variableNode)
+        {
+            if (variables.ContainsKey(variableNode.Name))
+            {
+                return IsNumericExpression(variables[variableNode.Name]);
+            }
+            return false;
+        }
+
+        return false;
+    }
+
+    private bool IsBooleanExpression(ExpressionNode expression)
+    {
+        if (expression is BooleanExpression)
+        {
+            return true;
+        }
+
+        if (expression is VariableNode variableNode)
+        {
+            if (variables.ContainsKey(variableNode.Name))
+            {
+                return IsBooleanExpression(variables[variableNode.Name]);
+            }
+            return false;
+        }
+
+        return false;
     }
 
     private ExpressionNode AnalyzeExpression(ExpressionNode expression)
@@ -845,7 +936,15 @@ public class SemanticAnalyzer
 
         if (expression is StringExpression)
         {
-            return expression; // Las expresiones de cadena son válidas tal cual
+            return expression;
+        }
+        else if (expression is BoolLiteralNode)
+        {
+            return expression;
+        }
+        else if (expression is VariableNode variableNode)
+        {
+            return AnalyzeVariableNode(variableNode);
         }
         else if (expression is ArithmeticExpression)
         {
@@ -855,13 +954,27 @@ public class SemanticAnalyzer
         {
             return AnalyzeBooleanExpression((BooleanExpression)expression);
         }
-        else if (expression is BoolLiteralNode)
-        {
-            return expression; // Los literales booleanos son válidos tal cual
-        }
 
         Error += $"Error semántico: Tipo de expresión no reconocido ({expression.GetType().Name}) en línea {expression.Line}, columna {expression.Column}.\n";
         return expression;
+    }
+
+    private ExpressionNode AnalyzeVariableNode(VariableNode variableNode)
+    {
+        if (string.IsNullOrEmpty(variableNode.Name))
+        {
+            Error += $"Error semántico: Nombre de variable vacío en línea {variableNode.Line}, columna {variableNode.Column}.\n";
+            return variableNode;
+        }
+
+        // Verificar que la variable esté definida
+        if (!variables.ContainsKey(variableNode.Name))
+        {
+            Error += $"Error semántico: Variable '{variableNode.Name}' no definida en línea {variableNode.Line}, columna {variableNode.Column}.\n";
+            return variableNode;
+        }
+
+        return variableNode;
     }
 
     private ArithmeticExpression AnalyzeArithmeticExpression(ArithmeticExpression expression)
@@ -874,7 +987,7 @@ public class SemanticAnalyzer
 
         if (expression is NumberNode)
         {
-            return expression; // Los números son válidos tal cual
+            return expression;
         }
         else if (expression is VariableNode variableNode)
         {
@@ -884,25 +997,10 @@ public class SemanticAnalyzer
                 return expression;
             }
 
-            // Verificar que la variable esté definida
             if (!variables.ContainsKey(variableNode.Name))
             {
                 Error += $"Error semántico: Variable '{variableNode.Name}' no definida en línea {variableNode.Line}, columna {variableNode.Column}.\n";
                 return expression;
-            }
-
-            // Verificar que la variable sea de tipo numérico
-            ExpressionNode varValue = variables[variableNode.Name];
-
-            if (varValue == null)
-            {
-                Error += $"Error semántico: Valor nulo para variable '{variableNode.Name}' en línea {variableNode.Line}, columna {variableNode.Column}.\n";
-                return expression;
-            }
-
-            if (!(varValue is ArithmeticExpression))
-            {
-                Error += $"Error semántico: Variable '{variableNode.Name}' no es de tipo numérico en línea {variableNode.Line}, columna {variableNode.Column}.\n";
             }
 
             return expression;
@@ -1122,7 +1220,7 @@ public class SemanticAnalyzer
         }
         else if (expression is BoolLiteralNode)
         {
-            return expression; // Los literales booleanos son válidos tal cual
+            return expression;
         }
 
         Error += $"Error semántico: Tipo de expresión booleana no reconocido ({expression.GetType().Name}) en línea {expression.Line}, columna {expression.Column}.\n";
@@ -1261,7 +1359,7 @@ public class SemanticAnalyzer
             return;
         }
 
-        string color = colorExpr.Value.Trim('"'); // Quitar comillas
+        string color = colorExpr.Value.Trim('"');
 
         if (!IsValidColor(color))
         {
@@ -1277,11 +1375,6 @@ public class SemanticAnalyzer
             if (!string.IsNullOrEmpty(Error))
             {
                 return;
-            }
-
-            if (!(arg is ArithmeticExpression))
-            {
-                Error += $"Error semántico: El argumento {i + 1} de GetColorCount debe ser una expresión numérica en línea {functionCall.Line}, columna {functionCall.Column}.\n";
             }
         }
     }
@@ -1330,7 +1423,7 @@ public class SemanticAnalyzer
             return;
         }
 
-        string color = colorExpr.Value.Trim('"'); // Quitar comillas
+        string color = colorExpr.Value.Trim('"');
 
         if (!IsValidColor(color))
         {
@@ -1374,9 +1467,12 @@ public class SemanticAnalyzer
             return;
         }
 
-        if (!(sizeArg is ArithmeticExpression))
+        if (!IsNumericExpression(sizeArg))
         {
-            Error += $"Error semántico: El argumento de IsBrushSize debe ser una expresión numérica en línea {functionCall.Line}, columna {functionCall.Column}.\n";
+            if (sizeArg is StringExpression)
+            {
+                Error += $"Error semántico: El argumento de IsBrushSize debe ser numérico, no cadena, en línea {functionCall.Line}, columna {functionCall.Column}.\n";
+            }
         }
     }
 
@@ -1427,7 +1523,7 @@ public class SemanticAnalyzer
             return;
         }
 
-        string color = colorExpr.Value.Trim('"'); // Quitar comillas
+        string color = colorExpr.Value.Trim('"');
 
         if (!IsValidColor(color))
         {
@@ -1450,9 +1546,12 @@ public class SemanticAnalyzer
             return;
         }
 
-        if (!(verticalArg is ArithmeticExpression) || !(horizontalArg is ArithmeticExpression))
+        if (!IsNumericExpression(verticalArg) || !IsNumericExpression(horizontalArg))
         {
-            Error += $"Error semántico: Los argumentos 2 y 3 de IsCanvasColor deben ser expresiones numéricas en línea {functionCall.Line}, columna {functionCall.Column}.\n";
+            if (verticalArg is StringExpression || horizontalArg is StringExpression)
+            {
+                Error += $"Error semántico: Los argumentos 2 y 3 de IsCanvasColor deben ser numéricos, no cadenas, en línea {functionCall.Line}, columna {functionCall.Column}.\n";
+            }
         }
     }
 }
