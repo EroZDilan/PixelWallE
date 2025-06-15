@@ -562,9 +562,9 @@ public class Interpreter
         if (CurrentColor == "Transparent")
         {
             // Para movimiento transparente, Wall-E se mueve la distancia completa
-            // MÁS un pixel adicional
-            int newX = CurrentX + dirX * (distance + 1);
-            int newY = CurrentY + dirY * (distance + 1);
+            // SIN el pixel adicional (corregido)
+            int newX = CurrentX + dirX * distance;
+            int newY = CurrentY + dirY * distance;
 
             if (newX < 0 || newX >= canvasSize || newY < 0 || newY >= canvasSize)
             {
@@ -579,22 +579,18 @@ public class Interpreter
         int startX = CurrentX;
         int startY = CurrentY;
 
-        // Calcular dónde termina la línea
+        // Calcular dónde termina la línea (último píxel dibujado)
         int lineEndX = startX + dirX * distance;
         int lineEndY = startY + dirY * distance;
 
-        // Wall-E se posiciona UN pixel más allá del final de la línea
-        int walleNewX = lineEndX + dirX;
-        int walleNewY = lineEndY + dirY;
 
-        // Validar que la línea completa y la posición de Wall-E estén en el canvas
-        if (lineEndX < 0 || lineEndX >= canvasSize || lineEndY < 0 || lineEndY >= canvasSize ||
-            walleNewX < 0 || walleNewX >= canvasSize || walleNewY < 0 || walleNewY >= canvasSize)
+        // Validar que toda la línea esté dentro del canvas
+        if (lineEndX < 0 || lineEndX >= canvasSize || lineEndY < 0 || lineEndY >= canvasSize)
         {
-            throw new Exception("La línea o la posición final de Wall-E estarían fuera del canvas");
+            throw new Exception("La línea terminaría fuera del canvas");
         }
 
-        // Dibujar cada pixel de la línea
+        // Dibujar cada pixel de la línea (incluyendo el píxel inicial y final)
         for (int step = 0; step <= distance; step++)
         {
             int currentX = startX + dirX * step;
@@ -602,10 +598,11 @@ public class Interpreter
             DrawPixelWithBrush(currentX, currentY);
         }
 
-        // Posicionar Wall-E un pixel después del final de la línea
-        CurrentX = walleNewX;
-        CurrentY = walleNewY;
+        // Posicionar Wall-E en el último píxel dibujado 
+        CurrentX = lineEndX;
+        CurrentY = lineEndY;
     }
+
     protected void DrawCircle(int centerX, int centerY, int radius)
     {
         if (CurrentColor == "Transparent")
